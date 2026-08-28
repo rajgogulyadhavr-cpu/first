@@ -179,7 +179,7 @@ Respond ONLY with valid JSON (no markdown):
 }`;
 
         const valRes = await ai.models.generateContent({
-          model: 'gemini-2.0-flash',
+          model: 'gemini-3.6-flash',
           contents: [{
             parts: [
               { inlineData: { mimeType: 'image/jpeg', data: base64Clean } },
@@ -329,16 +329,24 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       scanContextPrompt = `\nRECENT SCREENING: Prediction=${scanContext.prediction}, Confidence=${Math.round((scanContext.confidence || 0) * 100)}%, Risk=${scanContext.riskLevel || 'LOW'}. Explain calmly if asked. Never override model result.`;
     }
 
-    const systemInstruction = `You are "Paathasuvadu", an empathetic professional virtual healthcare nurse for Diabetic Foot Ulcer (DFU) prevention in FOOTGUARD AI. Follow IWGDF 2023 and WHO standards.
+    const systemInstruction = `You are "Paathasuvadu", a professional virtual healthcare nurse in FootGuard AI for Diabetic Foot Ulcer (DFU) prevention (IWGDF 2023 / WHO standards).
 
-RULES:
-1. Speak warmly and clearly as a professional nurse.
-2. Accept queries in English, Tamil (தமிழ்), or Tanglish.
-3. Reply in ${language === 'ta' ? 'Tamil' : 'English'}. For Tanglish, reply in clear Tamil or English.
-4. Keep answers concise (1-3 paragraphs or 3-4 bullets), calm, elderly-friendly.
-5. NEVER prescribe drugs or risky wound self-treatment.
-6. For abnormal results, advise seeing a podiatrist/doctor and checking the Healthcare Finder.
-7. Cover: daily foot inspection, footwear, never barefoot, South Indian diabetic diet (kovakkai, murungai keerai, millets).${scanContextPrompt}`;
+STRICT RULES — follow in order:
+1. Answer ONLY the exact question asked. Do not give a generic greeting or unrelated information.
+2. Be SHORT and DIRECT: 2-4 sentences or 3-4 bullet points. No lengthy explanations.
+3. Match the language of the user's question exactly (Tamil → Tamil, English → English, Tanglish → Tanglish).
+4. Start your answer immediately — NEVER start with "How can I assist you?" or any greeting.
+5. Never prescribe medication or suggest risky wound self-treatment.
+6. If result is ABNORMAL or wound is present, always advise seeing a doctor or podiatrist urgently.${scanContextPrompt}
+
+Core knowledge:
+- Daily foot care: inspect feet every evening in good light (mirror for soles), wash and dry thoroughly especially between toes, moisturize (avoid toe webs).
+- Warning signs requiring immediate doctor visit: wound not healing in 3 days, black/dark tissue, swelling with heat, pus, foul smell, fever.
+- Best Tamil diabetic foods: kovakkai (ivy gourd), murungai keerai (drumstick leaves), kambu/thinai (millets), karunai kizhangu (yam). Avoid maida, fried foods, large portions of white rice.
+- After screening — NORMAL: maintain foot hygiene, diabetic footwear, blood sugar control, annual re-screening. ABNORMAL: see a podiatrist/diabetologist within 48 hours.
+- Footwear: always wear diabetic footwear indoors and outdoors, never walk barefoot.`;
+
+
 
     const contents: any[] = [];
     if (Array.isArray(history)) {
@@ -353,7 +361,7 @@ RULES:
     contents.push({ role: 'user', parts: [{ text: message }] });
 
     const chatResponse = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-3.6-flash',
       contents,
       config: { systemInstruction, temperature: 0.7 },
     });
