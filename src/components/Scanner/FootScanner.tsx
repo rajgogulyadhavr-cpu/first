@@ -328,7 +328,7 @@ export const FootScanner: React.FC<FootScannerProps> = ({
       {!selectedImage && !isCameraActive && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Option 1: Live Camera Card */}
+            {/* Option 1: Live Camera Card — clicking anywhere opens camera immediately */}
             <div
               id="start-camera-card"
               onClick={() => setIsCameraActive(true)}
@@ -346,7 +346,8 @@ export const FootScanner: React.FC<FootScannerProps> = ({
               <button
                 id="camera-action-btn"
                 type="button"
-                className="px-5 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-md shadow-emerald-600/20 group-hover:bg-emerald-500 transition-colors"
+                onClick={(e) => { e.stopPropagation(); setIsCameraActive(true); }}
+                className="px-5 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-md shadow-emerald-600/20 group-hover:bg-emerald-500 transition-colors pointer-events-auto"
               >
                 {t.cameraCapture}
               </button>

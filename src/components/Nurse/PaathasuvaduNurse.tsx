@@ -84,7 +84,7 @@ export const PaathasuvaduNurse: React.FC<PaathasuvaduNurseProps> = ({
   }, []);
 
   // Web Speech Recognition Setup for Microphone Voice Input
-  const toggleListening = () => {
+  const toggleListening = async () => {
     if (isListening) {
       if (recognitionRef.current) {
         recognitionRef.current.stop();
@@ -94,21 +94,27 @@ export const PaathasuvaduNurse: React.FC<PaathasuvaduNurseProps> = ({
       return;
     }
 
-    stopCurrentAudio();
-
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      alert(
-        language === 'ta'
-          ? 'உங்கள் உலாவியில் குரல் உள்ளீடு ஆதரிக்கப்படவில்லை. தயவுசெய்து தட்டச்சு செய்யவும்.'
-          : 'Speech recognition is not supported in this browser. Please type your message.'
-      );
-      return;
-    }
-
     try {
+      const SpeechRecognition =
+        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+      if (!SpeechRecognition) {
+        alert(
+          language === 'ta'
+            ? 'இந்த உலாவி குரல் அங்கீகாரத்தை ஆதரிக்கவில்லை. தயவுசெய்து Chrome பயன்படுத்தவும்.'
+            : 'Speech recognition is not supported in this browser. Please type your message.'
+        );
+        return;
+      }
+
+      // Prime browser mic permission immediately before SpeechRecognition starts
+      try {
+        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStream.getTracks().forEach(t => t.stop()); // stop immediately, just needed for permission grant
+      } catch {
+        // Permission denied — SpeechRecognition will also fail, but let it show its own error
+      }
+
       const recognition = new SpeechRecognition();
       recognition.continuous = false;
       recognition.interimResults = true;
@@ -121,19 +127,18 @@ export const PaathasuvaduNurse: React.FC<PaathasuvaduNurseProps> = ({
 
       recognition.onresult = (event: any) => {
         let transcript = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
           transcript += event.results[i][0].transcript;
         }
         setInputText(transcript);
+        if (event.results[event.results.length - 1].isFinal) {
+          handleSendMessage(transcript);
+        }
       };
 
       recognition.onend = () => {
         setIsListening(false);
-        if (inputText.trim()) {
-          handleSendMessage(inputText);
-        } else {
-          setNurseState('idle');
-        }
+        if (nurseState === 'listening') setNurseState('idle');
       };
 
       recognition.onerror = (e: any) => {
