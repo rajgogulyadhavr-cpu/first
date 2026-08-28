@@ -32,7 +32,7 @@ interface TrainedModel {
   version: number;          // increment to invalidate old cache
 }
 
-const CLASSIFIER_VERSION = 2; // bump this to force retrain
+const CLASSIFIER_VERSION = 3; // v3: use 0.5 threshold (correct with class-weighted training)
 let model: TrainedModel | null = null;
 let modelLoading = false;
 const MODEL_CACHE_PATH = path.join(process.cwd(), 'dfu_model_cache.json');
@@ -246,14 +246,12 @@ async function loadAndTrain(): Promise<TrainedModel> {
   // Train with class weights
   const weights = trainWeightedLogisticRegression(XtrainNorm, ytrain, classWeightNormal, 1200, 0.1);
 
-  // Calibrated threshold: use class-prior probability of ABNORMAL
-  // With imbalanced classes, optimal threshold ≈ prior probability of ABNORMAL in training set
-  const priorAbnormal = ytrain.filter(v => v === 1).length / ytrain.length;
-  // Use midpoint between 0.5 and prior as threshold (empirically stable)
-  const threshold = (0.5 + priorAbnormal) / 2;
-  console.log(`[DFU Classifier v2] Decision threshold: ${threshold.toFixed(3)} (prior ABNORMAL: ${priorAbnormal.toFixed(3)})`);
+  // Use 0.5 as the decision threshold — correct for class-weighted logistic regression.
+  // Class weights already shift the decision boundary during training so the raw
+  // sigmoid output is centred around the true class boundary at p=0.5.
+  const threshold = 0.5;
+  console.log(`[DFU Classifier v3] Decision threshold: ${threshold} (class-weighted model, no post-hoc shift)`);
 
-  // Evaluate on validation set
   let tp = 0, tn = 0, fp = 0, fn = 0;
   for (let i = 0; i < XvalNorm.length; i++) {
     const prob = predictRaw(XvalNorm[i], weights);
@@ -267,8 +265,8 @@ async function loadAndTrain(): Promise<TrainedModel> {
   const recallNormal = (tn + fp) > 0 ? tn / (tn + fp) : 0;
   const recallAbnormal = (tp + fn) > 0 ? tp / (tp + fn) : 0;
 
-  console.log(`[DFU Classifier v2] ✅ Val accuracy: ${(accuracy * 100).toFixed(1)}% | Normal recall: ${(recallNormal * 100).toFixed(1)}% | Abnormal recall: ${(recallAbnormal * 100).toFixed(1)}%`);
-  console.log(`[DFU Classifier v2] Confusion → TP:${tp} TN:${tn} FP:${fp} FN:${fn}`);
+  console.log(`[DFU Classifier v3] ✅ Val accuracy: ${(accuracy * 100).toFixed(1)}% | Normal recall: ${(recallNormal * 100).toFixed(1)}% | Abnormal recall: ${(recallAbnormal * 100).toFixed(1)}%`);
+  console.log(`[DFU Classifier v3] Confusion → TP:${tp} TN:${tn} FP:${fp} FN:${fn}`);
 
   const trained: TrainedModel = {
     weights,
@@ -310,7 +308,7 @@ export async function initDFUClassifier(): Promise<void> {
         typeof cached.threshold === 'number'
       ) {
         model = cached;
-        console.log(`[DFU Classifier v2] ✅ Loaded cached model (acc: ${(model.accuracy * 100).toFixed(1)}%, normalRecall: ${(model.recallNormal * 100).toFixed(1)}%, abnormalRecall: ${(model.recallAbnormal * 100).toFixed(1)}%)`);
+        console.log(`[DFU Classifier v3] ✅ Loaded cached model (acc: ${(model.accuracy * 100).toFixed(1)}%, normalRecall: ${(model.recallNormal * 100).toFixed(1)}%, abnormalRecall: ${(model.recallAbnormal * 100).toFixed(1)}%, threshold: ${model.threshold})`);
         modelLoading = false;
         return;
       }

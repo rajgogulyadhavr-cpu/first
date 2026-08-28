@@ -358,7 +358,19 @@ RULES:
       config: { systemInstruction, temperature: 0.7 },
     });
 
-    const reply = chatResponse.text || (language === 'ta' ? 'வணக்கம்! நான் உங்களுக்கு எவ்வாறு உதவ முடியும்?' : 'Hello! How can I assist with your foot care today?');
+    // Robust text extraction — try .text getter first, then walk candidates
+    let reply: string | undefined = chatResponse.text;
+    if (!reply) {
+      const parts = chatResponse.candidates?.[0]?.content?.parts;
+      if (parts) {
+        reply = parts.map((p: any) => p.text || '').join('').trim();
+      }
+    }
+
+    if (!reply) {
+      console.error('[FootGuard] Gemini returned empty reply. Full response:', JSON.stringify(chatResponse).slice(0, 500));
+      return res.status(500).json({ success: false, error: 'Gemini returned an empty response. Please retry.' });
+    }
 
     res.json({ success: true, reply, language });
   } catch (error: any) {
