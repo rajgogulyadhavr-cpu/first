@@ -1,0 +1,6 @@
+{
+  "name": "FootGuard AI",
+  "description": "Smart AI-Based Early Prevention and Detection System for Diabetic Foot Ulcers with bilingual Tamil/English support, Paathasuvadu Voice Nurse AI, Evidence-based care, Indian/Tamil diet guides, and Tamil Nadu healthcare finder.",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
