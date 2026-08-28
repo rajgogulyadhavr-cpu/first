@@ -4,6 +4,7 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  VITE_API_BASE_URL = "https://footguard-backend.onrender.com"
 
 # SPA routing: redirect all paths to index.html
 [[redirects]]
