@@ -1,34 +1,46 @@
 /**
- * FootGuard AI — Real DFU Binary Classifier
- * Trains a logistic regression classifier on-the-fly from the local DFU dataset patches.
- * Uses statistical image features (color, texture, redness) extracted via sharp.
- * No hardcoded predictions. No Gemini for DFU classification.
+ * FootGuard AI — Real DFU Binary Classifier (FIXED v2)
+ * 
+ * FIXES APPLIED:
+ * 1. Class-weighted logistic regression to handle 54 Normal vs 512 Abnormal imbalance (9.5:1 ratio).
+ * 2. Calibrated decision threshold using class-prior probability instead of fixed 0.5.
+ * 3. Expanded feature vector (12 features) including saturation, dark-pixel ratio, and contrast range.
+ * 4. Feature normalization using per-feature min-max scaling for stable gradient descent.
+ * 5. Cache invalidated — retrain uses corrected weighted training loop.
+ * 
  * Classes: NORMAL (0) | ABNORMAL (1)
+ * Dataset: DFU/Patches/Normal(Healthy skin)/ + DFU/Patches/Abnormal(Ulcer)/
  */
 
 import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 
-// ── Feature vector (8 dimensions) ──────────────────────────────────────────
-// [meanR, meanG, meanB, stdR, stdG, stdB, rednessRatio, textureVariance]
 type FeatureVector = number[];
 
 interface TrainedModel {
-  weights: number[];  // logistic regression weights (8 features + 1 bias)
+  weights: number[];
+  threshold: number;        // class-prior calibrated threshold
+  featureMins: number[];    // per-feature min for normalization
+  featureMaxs: number[];    // per-feature max for normalization
   trainedOn: number;
   normalCount: number;
   abnormalCount: number;
   accuracy: number;
+  recallNormal: number;
+  recallAbnormal: number;
+  version: number;          // increment to invalidate old cache
 }
 
+const CLASSIFIER_VERSION = 2; // bump this to force retrain
 let model: TrainedModel | null = null;
 let modelLoading = false;
 const MODEL_CACHE_PATH = path.join(process.cwd(), 'dfu_model_cache.json');
 
-// ── Image feature extraction ─────────────────────────────────────────────────
+// ── Feature extraction (12 dimensions) ────────────────────────────────────────
+// DFU ulcers:  high redness, dark necrotic regions, irregular texture, low saturation uniformity
+// Normal foot: uniform moderate skin tone, consistent saturation, smooth texture
 async function extractFeatures(imageBuffer: Buffer): Promise<FeatureVector> {
-  // Resize to 64×64 RGB for fast, consistent feature extraction
   const { data, info } = await sharp(imageBuffer)
     .resize(64, 64, { fit: 'cover' })
     .removeAlpha()
@@ -38,11 +50,16 @@ async function extractFeatures(imageBuffer: Buffer): Promise<FeatureVector> {
   const pixels = info.width * info.height;
   let sumR = 0, sumG = 0, sumB = 0;
   let sumR2 = 0, sumG2 = 0, sumB2 = 0;
+  let darkPixels = 0;   // necrotic/dark tissue count
+  let brightPixels = 0; // highlight/overexposed count
 
   for (let i = 0; i < data.length; i += 3) {
     const r = data[i], g = data[i + 1], b = data[i + 2];
     sumR += r; sumG += g; sumB += b;
     sumR2 += r * r; sumG2 += g * g; sumB2 += b * b;
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (lum < 60) darkPixels++;
+    if (lum > 210) brightPixels++;
   }
 
   const meanR = sumR / pixels;
@@ -52,29 +69,78 @@ async function extractFeatures(imageBuffer: Buffer): Promise<FeatureVector> {
   const stdG = Math.sqrt(Math.max(0, sumG2 / pixels - meanG * meanG));
   const stdB = Math.sqrt(Math.max(0, sumB2 / pixels - meanB * meanB));
 
-  // Redness ratio: key DFU biomarker (ulcers show elevated red channel relative to green/blue)
+  // Feature 1-3: Normalized mean channels
+  const fMeanR = meanR / 255;
+  const fMeanG = meanG / 255;
+  const fMeanB = meanB / 255;
+
+  // Feature 4-6: Normalized std channels (texture/variation)
+  const fStdR = stdR / 255;
+  const fStdG = stdG / 255;
+  const fStdB = stdB / 255;
+
+  // Feature 7: Redness ratio (ulcers elevated R vs G+B)
   const rednessRatio = meanR / (meanG + meanB + 1);
 
-  // Texture variance: DFU lesions have high local pixel variance (irregular texture)
-  const brightness = data.reduce((acc, v, i) => i % 3 === 0 ? acc + (data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114) : acc, 0) / pixels;
-  let textureSum = 0;
+  // Feature 8: Dark pixel ratio (necrotic/black tissue in DFU)
+  const darkRatio = darkPixels / pixels;
+
+  // Feature 9: Bright pixel ratio (healthy reflective skin in normal)
+  const brightRatio = brightPixels / pixels;
+
+  // Feature 10: Overall texture variance (luma std)
+  const meanLuma = (0.299 * sumR + 0.587 * sumG + 0.114 * sumB) / pixels;
+  let lumaVar = 0;
   for (let i = 0; i < data.length; i += 3) {
     const lum = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
-    textureSum += (lum - brightness) ** 2;
+    lumaVar += (lum - meanLuma) ** 2;
   }
-  const textureVariance = Math.sqrt(textureSum / pixels);
+  const textureVar = Math.sqrt(lumaVar / pixels) / 255;
 
-  return [meanR / 255, meanG / 255, meanB / 255, stdR / 255, stdG / 255, stdB / 255, rednessRatio, textureVariance / 255];
+  // Feature 11: Colour contrast range (max-min per channel, indicates lesion borders)
+  let maxR = 0, minR = 255, maxG = 0, minG = 255;
+  for (let i = 0; i < data.length; i += 3) {
+    if (data[i] > maxR) maxR = data[i];
+    if (data[i] < minR) minR = data[i];
+    if (data[i+1] > maxG) maxG = data[i+1];
+    if (data[i+1] < minG) minG = data[i+1];
+  }
+  const colourRange = ((maxR - minR) + (maxG - minG)) / (2 * 255);
+
+  // Feature 12: Green-Blue imbalance (inflammation pushes R up, suppresses G/B)
+  const gbBalance = Math.abs(meanG - meanB) / 255;
+
+  return [fMeanR, fMeanG, fMeanB, fStdR, fStdG, fStdB, rednessRatio, darkRatio, brightRatio, textureVar, colourRange, gbBalance];
+}
+
+// ── Feature normalization ─────────────────────────────────────────────────────
+function normalizeFeatures(X: FeatureVector[], mins: number[], maxs: number[]): FeatureVector[] {
+  return X.map(row => row.map((v, j) => {
+    const range = maxs[j] - mins[j];
+    return range > 0 ? (v - mins[j]) / range : 0;
+  }));
+}
+
+function computeMinMax(X: FeatureVector[]): { mins: number[]; maxs: number[] } {
+  const nF = X[0].length;
+  const mins = new Array(nF).fill(Infinity);
+  const maxs = new Array(nF).fill(-Infinity);
+  for (const row of X) {
+    for (let j = 0; j < nF; j++) {
+      if (row[j] < mins[j]) mins[j] = row[j];
+      if (row[j] > maxs[j]) maxs[j] = row[j];
+    }
+  }
+  return { mins, maxs };
 }
 
 // ── Sigmoid ───────────────────────────────────────────────────────────────────
 function sigmoid(z: number): number {
-  return 1 / (1 + Math.exp(-z));
+  return 1 / (1 + Math.exp(-Math.max(-500, Math.min(500, z))));
 }
 
 // ── Logistic regression predict ───────────────────────────────────────────────
-function predict(features: FeatureVector, weights: number[]): number {
-  // weights has length features.length + 1 (last = bias)
+function predictRaw(features: FeatureVector, weights: number[]): number {
   let z = weights[weights.length - 1]; // bias
   for (let i = 0; i < features.length; i++) {
     z += features[i] * weights[i];
@@ -82,30 +148,41 @@ function predict(features: FeatureVector, weights: number[]): number {
   return sigmoid(z);
 }
 
-// ── Logistic regression training (gradient descent) ──────────────────────────
-function trainLogisticRegression(
+// ── CLASS-WEIGHTED logistic regression training ───────────────────────────────
+// w_abnormal = 1.0, w_normal = abnormalCount / normalCount  (compensates imbalance)
+function trainWeightedLogisticRegression(
   X: FeatureVector[],
   y: number[],
-  epochs = 500,
-  lr = 0.1
+  classWeightNormal: number,
+  epochs = 1000,
+  lr = 0.05
 ): number[] {
   const nFeatures = X[0].length;
-  const weights = new Array(nFeatures + 1).fill(0.0); // +1 for bias
+  const weights = new Array(nFeatures + 1).fill(0.01);
 
   for (let e = 0; e < epochs; e++) {
     const gradients = new Array(nFeatures + 1).fill(0.0);
+    let totalWeight = 0;
 
     for (let i = 0; i < X.length; i++) {
-      const p = predict(X[i], weights);
-      const err = p - y[i];
+      // Apply class weight: NORMAL samples get higher weight to compensate imbalance
+      const sampleWeight = y[i] === 0 ? classWeightNormal : 1.0;
+      const p = predictRaw(X[i], weights);
+      const err = (p - y[i]) * sampleWeight;
+      totalWeight += sampleWeight;
+
       for (let j = 0; j < nFeatures; j++) {
         gradients[j] += err * X[i][j];
       }
-      gradients[nFeatures] += err; // bias gradient
+      gradients[nFeatures] += err;
     }
 
+    // Adaptive learning rate with L2 regularisation to prevent overfitting
+    const adaptiveLr = lr / (1 + e * 0.001);
+    const l2Lambda = 0.001;
     for (let j = 0; j <= nFeatures; j++) {
-      weights[j] -= (lr / X.length) * gradients[j];
+      const l2 = j < nFeatures ? l2Lambda * weights[j] : 0;
+      weights[j] -= adaptiveLr * ((gradients[j] / totalWeight) + l2);
     }
   }
   return weights;
@@ -119,74 +196,97 @@ async function loadAndTrain(): Promise<TrainedModel> {
   const normalFiles = fs.readdirSync(normalDir).filter(f => f.match(/\.(jpg|jpeg|png)$/i));
   const abnormalFiles = fs.readdirSync(abnormalDir).filter(f => f.match(/\.(jpg|jpeg|png)$/i));
 
-  console.log(`[DFU Classifier] Training on ${normalFiles.length} NORMAL + ${abnormalFiles.length} ABNORMAL patches...`);
+  console.log(`[DFU Classifier v2] Training on ${normalFiles.length} NORMAL + ${abnormalFiles.length} ABNORMAL patches...`);
 
-  const X: FeatureVector[] = [];
-  const y: number[] = [];
+  const Xnormal: FeatureVector[] = [];
+  const Xabnormal: FeatureVector[] = [];
   let loadErrors = 0;
 
-  // Load NORMAL patches (label 0)
   for (const f of normalFiles) {
     try {
       const buf = fs.readFileSync(path.join(normalDir, f));
-      const feat = await extractFeatures(buf);
-      X.push(feat);
-      y.push(0);
+      Xnormal.push(await extractFeatures(buf));
     } catch { loadErrors++; }
   }
 
-  // Load ABNORMAL patches (label 1)
   for (const f of abnormalFiles) {
     try {
       const buf = fs.readFileSync(path.join(abnormalDir, f));
-      const feat = await extractFeatures(buf);
-      X.push(feat);
-      y.push(1);
+      Xabnormal.push(await extractFeatures(buf));
     } catch { loadErrors++; }
   }
 
-  console.log(`[DFU Classifier] Features extracted: ${X.length} samples (${loadErrors} load errors)`);
+  // Class weight: compensate for imbalance (NORMAL needs higher weight)
+  const classWeightNormal = Xabnormal.length / Math.max(Xnormal.length, 1);
+  console.log(`[DFU Classifier v2] Class weight for NORMAL: ${classWeightNormal.toFixed(2)}x`);
 
-  // Shuffle training data
+  // Build full dataset
+  const X: FeatureVector[] = [...Xnormal, ...Xabnormal];
+  const y: number[] = [...new Array(Xnormal.length).fill(0), ...new Array(Xabnormal.length).fill(1)];
+
+  // Shuffle
   for (let i = X.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [X[i], X[j]] = [X[j], X[i]];
     [y[i], y[j]] = [y[j], y[i]];
   }
 
-  // 80/20 train/val split for accuracy measurement
+  // 80/20 stratified-ish split
   const splitAt = Math.floor(X.length * 0.8);
   const Xtrain = X.slice(0, splitAt);
   const ytrain = y.slice(0, splitAt);
   const Xval = X.slice(splitAt);
   const yval = y.slice(splitAt);
 
-  // Train logistic regression
-  const weights = trainLogisticRegression(Xtrain, ytrain, 800, 0.15);
+  // Per-feature normalization (fit on training set only)
+  const { mins, maxs } = computeMinMax(Xtrain);
+  const XtrainNorm = normalizeFeatures(Xtrain, mins, maxs);
+  const XvalNorm = normalizeFeatures(Xval, mins, maxs);
 
-  // Measure validation accuracy
-  let correct = 0;
-  for (let i = 0; i < Xval.length; i++) {
-    const prob = predict(Xval[i], weights);
-    const pred = prob >= 0.5 ? 1 : 0;
-    if (pred === yval[i]) correct++;
+  // Train with class weights
+  const weights = trainWeightedLogisticRegression(XtrainNorm, ytrain, classWeightNormal, 1200, 0.1);
+
+  // Calibrated threshold: use class-prior probability of ABNORMAL
+  // With imbalanced classes, optimal threshold ≈ prior probability of ABNORMAL in training set
+  const priorAbnormal = ytrain.filter(v => v === 1).length / ytrain.length;
+  // Use midpoint between 0.5 and prior as threshold (empirically stable)
+  const threshold = (0.5 + priorAbnormal) / 2;
+  console.log(`[DFU Classifier v2] Decision threshold: ${threshold.toFixed(3)} (prior ABNORMAL: ${priorAbnormal.toFixed(3)})`);
+
+  // Evaluate on validation set
+  let tp = 0, tn = 0, fp = 0, fn = 0;
+  for (let i = 0; i < XvalNorm.length; i++) {
+    const prob = predictRaw(XvalNorm[i], weights);
+    const pred = prob >= threshold ? 1 : 0;
+    if (pred === 1 && yval[i] === 1) tp++;
+    else if (pred === 0 && yval[i] === 0) tn++;
+    else if (pred === 1 && yval[i] === 0) fp++;
+    else fn++;
   }
-  const accuracy = Xval.length > 0 ? correct / Xval.length : 0;
+  const accuracy = (tp + tn) / Math.max(Xval.length, 1);
+  const recallNormal = (tn + fp) > 0 ? tn / (tn + fp) : 0;
+  const recallAbnormal = (tp + fn) > 0 ? tp / (tp + fn) : 0;
+
+  console.log(`[DFU Classifier v2] ✅ Val accuracy: ${(accuracy * 100).toFixed(1)}% | Normal recall: ${(recallNormal * 100).toFixed(1)}% | Abnormal recall: ${(recallAbnormal * 100).toFixed(1)}%`);
+  console.log(`[DFU Classifier v2] Confusion → TP:${tp} TN:${tn} FP:${fp} FN:${fn}`);
 
   const trained: TrainedModel = {
     weights,
+    threshold,
+    featureMins: mins,
+    featureMaxs: maxs,
     trainedOn: X.length,
     normalCount: normalFiles.length,
     abnormalCount: abnormalFiles.length,
     accuracy,
+    recallNormal,
+    recallAbnormal,
+    version: CLASSIFIER_VERSION,
   };
 
-  console.log(`[DFU Classifier] ✅ Training complete. Val accuracy: ${(accuracy * 100).toFixed(1)}% on ${Xval.length} samples`);
-
-  // Cache model weights to disk
   try {
     fs.writeFileSync(MODEL_CACHE_PATH, JSON.stringify(trained));
-    console.log('[DFU Classifier] Model weights cached to disk.');
+    console.log('[DFU Classifier v2] Model weights cached to disk.');
   } catch { /* non-critical */ }
 
   return trained;
@@ -194,29 +294,34 @@ async function loadAndTrain(): Promise<TrainedModel> {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/** Initialize the classifier (call once at server startup) */
 export async function initDFUClassifier(): Promise<void> {
   if (model || modelLoading) return;
   modelLoading = true;
 
-  // Try loading cached model first (instant startup on subsequent runs)
+  // Load cache only if version matches
   if (fs.existsSync(MODEL_CACHE_PATH)) {
     try {
       const cached = JSON.parse(fs.readFileSync(MODEL_CACHE_PATH, 'utf8')) as TrainedModel;
-      if (cached.weights && cached.weights.length === 9) {
+      if (
+        cached.version === CLASSIFIER_VERSION &&
+        cached.weights?.length === 13 &&
+        cached.featureMins?.length === 12 &&
+        cached.featureMaxs?.length === 12 &&
+        typeof cached.threshold === 'number'
+      ) {
         model = cached;
-        console.log(`[DFU Classifier] ✅ Loaded cached model (trained on ${model.trainedOn} samples, acc: ${(model.accuracy * 100).toFixed(1)}%)`);
+        console.log(`[DFU Classifier v2] ✅ Loaded cached model (acc: ${(model.accuracy * 100).toFixed(1)}%, normalRecall: ${(model.recallNormal * 100).toFixed(1)}%, abnormalRecall: ${(model.recallAbnormal * 100).toFixed(1)}%)`);
         modelLoading = false;
         return;
       }
     } catch { /* retrain */ }
   }
 
+  // Cache invalid/outdated → retrain from dataset
   model = await loadAndTrain();
   modelLoading = false;
 }
 
-/** Run DFU prediction on a base64 image buffer. Returns { prediction, confidence } */
 export async function runDFUPrediction(imageBase64: string): Promise<{
   prediction: 'NORMAL' | 'ABNORMAL';
   confidence: number;
@@ -225,8 +330,7 @@ export async function runDFUPrediction(imageBase64: string): Promise<{
   isModelReady: boolean;
 }> {
   if (!model) {
-    // Model not ready yet — try to wait briefly
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 2000));
     if (!model) {
       return { prediction: 'NORMAL', confidence: 0.5, probabilityNormal: 0.5, probabilityAbnormal: 0.5, isModelReady: false };
     }
@@ -235,11 +339,19 @@ export async function runDFUPrediction(imageBase64: string): Promise<{
   const base64Clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
   const buffer = Buffer.from(base64Clean, 'base64');
 
-  const features = await extractFeatures(buffer);
-  const probAbnormal = predict(features, model.weights);
+  const rawFeatures = await extractFeatures(buffer);
+
+  // Apply same per-feature normalization used during training
+  const normFeatures = rawFeatures.map((v, j) => {
+    const range = model!.featureMaxs[j] - model!.featureMins[j];
+    return range > 0 ? (v - model!.featureMins[j]) / range : 0;
+  });
+
+  const probAbnormal = predictRaw(normFeatures, model.weights);
   const probNormal = 1 - probAbnormal;
 
-  const isAbnormal = probAbnormal >= 0.5;
+  // Use calibrated threshold (not hard-coded 0.5)
+  const isAbnormal = probAbnormal >= model.threshold;
   const confidence = isAbnormal ? probAbnormal : probNormal;
 
   return {
@@ -251,17 +363,19 @@ export async function runDFUPrediction(imageBase64: string): Promise<{
   };
 }
 
-/** Check classifier readiness */
 export function isDFUModelReady(): boolean {
   return model !== null;
 }
 
-/** Get model info */
 export function getDFUModelInfo() {
   return model ? {
     trainedOn: model.trainedOn,
     normalCount: model.normalCount,
     abnormalCount: model.abnormalCount,
     accuracy: model.accuracy,
+    recallNormal: model.recallNormal,
+    recallAbnormal: model.recallAbnormal,
+    threshold: model.threshold,
+    version: model.version,
   } : null;
 }
