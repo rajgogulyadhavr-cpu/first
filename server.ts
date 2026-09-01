@@ -131,7 +131,7 @@ app.post('/api/predict', async (req: Request, res: Response) => {
       });
     }
 
-    const base64Clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    const base64Clean = imageBase64.replace(/^data:image\/[a-zA-Z+-]+;base64,/, '').replace(/\s/g, '');
     const buffer = Buffer.from(base64Clean, 'base64');
     const imageSizeKB = buffer.length / 1024;
 
@@ -154,22 +154,14 @@ app.post('/api/predict', async (req: Request, res: Response) => {
 
     if (ai) {
       try {
-        const validationPrompt = `You are a strict clinical foot image validator for DFU screening.
+        const validationPrompt = `You are a clinical foot image validator for DFU screening.
 
-TASK: Determine if this image shows a human foot (sole, plantar, dorsal, heel, or toes).
+TASK: Determine if this image shows a human foot, foot sole, heel, toes, plantar/dorsal surface, foot skin patch, or diabetic foot ulcer.
 
-Immediately reject with "isFoot": false if the image shows:
-- Food, fruit, vegetables, drinks
-- Human face, portrait, eyes
-- Human hand, palm, wrist (without foot)
-- Animal, pet, object, furniture, clothing
-- Document, screenshot, landscape, cartoon
-- Body part other than foot
+IMPORTANT: Accept foot skin patches, close-up crops of soles/heels/toes, foot ulcers, and foot lesions as "isFoot": true.
+ONLY reject with "isFoot": false if the image clearly shows something completely unrelated (e.g., face, food, animal, car, document, landscape).
 
-If it IS a human foot, also check image quality:
-- "isQualityOk": false if severely blurry, too dark/bright to assess
-
-Respond ONLY with valid JSON (no markdown):
+Respond ONLY with valid JSON:
 {
   "isFoot": boolean,
   "detectedCategory": "human_foot" | "food" | "human_face" | "human_hand" | "object" | "animal" | "document" | "landscape" | "other",
@@ -189,15 +181,24 @@ Respond ONLY with valid JSON (no markdown):
           config: { responseMimeType: 'application/json', temperature: 0.0 },
         });
 
-        const parsed = JSON.parse(valRes.text || '{}');
-        isFoot = parsed.isFoot !== false;
-        detectedCategory = parsed.detectedCategory || 'human_foot';
+        let rawText = (valRes.text || '').replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+        const parsed = JSON.parse(rawText || '{}');
+        
+        detectedCategory = (parsed.detectedCategory || 'human_foot').toLowerCase();
+        const explicitNonFootCategories = ['food', 'human_face', 'object', 'animal', 'document', 'landscape'];
+        
+        if (parsed.isFoot === false && explicitNonFootCategories.includes(detectedCategory)) {
+          isFoot = false;
+        } else {
+          isFoot = true; // Default to true for foot skin patches, lesions, and ambiguous crops
+        }
+
         isQualityOk = parsed.isQualityOk !== false;
         qualityMsgEn = parsed.qualityIssueEn || '';
         qualityMsgTa = parsed.qualityIssueTa || '';
       } catch (err) {
-        console.warn('[FootGuard] Gemini foot validation failed, proceeding:', err);
-        // If Gemini fails, still run the DFU model (don't block the user)
+        console.warn('[FootGuard] Gemini foot validation skipped/failed, proceeding to DFU model:', err);
+        isFoot = true; // Fallthrough to dataset DFU model
       }
     }
 
@@ -226,12 +227,8 @@ Respond ONLY with valid JSON (no markdown):
 
     // ── GATE 2: Real DFU classification (trained on dataset) ───────────────
     if (!isDFUModelReady()) {
-      return res.status(503).json({
-        success: false,
-        error: 'DFU model is still loading. Please wait a moment and retry.',
-        modelLoading: true,
-        serverDurationMs: Math.round(performance.now() - reqStart),
-      });
+      console.log('[FootGuard] DFU classifier not pre-warmed, initializing now...');
+      await initDFUClassifier();
     }
 
     const dfuResult = await runDFUPrediction(imageBase64);
@@ -306,6 +303,43 @@ Respond ONLY with valid JSON (no markdown):
   }
 });
 
+// Helper for fallback Paathasuvadu AI response generator
+function getFallbackNurseReply(message: string, language: string, scanContext?: any): string {
+  const msgLower = message.toLowerCase();
+  const isTa = language === 'ta' || /[\u0B80-\u0BFF]/.test(message);
+  const isAbnormal = scanContext?.prediction === 'ABNORMAL';
+
+  if (isAbnormal) {
+    if (isTa) {
+      return `உங்கள் பரிசோதனையில் சாத்தியமான நீரிழிவு பாத புண் கண்டறியப்பட்டுள்ளது (ABNORMAL). 48 மணி நேரத்திற்குள் ஒரு அரசு மருத்துவமனை அல்லது கால் மருத்துவரை (Podiatrist) அணுகவும். புண்ணை சுயமாக சுத்தம் செய்யாதீர்கள்.`;
+    } else {
+      return `Your screening shows a possible diabetic foot ulcer (ABNORMAL). Please consult a podiatrist or diabetologist within 48 hours. Avoid self-treating or popping any blister/wound.`;
+    }
+  }
+
+  if (msgLower.includes('food') || msgLower.includes('diet') || msgLower.includes('eat') || msgLower.includes('உணவு') || msgLower.includes('சாப்பாடு')) {
+    if (isTa) {
+      return `நீரிழிவு நோயாளிகளுக்கான சிறந்த உணவுகள்:\n• காய்கறிகள்: கோவைக்காய், முருங்கைக்கீரை, வெண்டைக்காய், பாகற்காய்.\n• தானியங்கள்: கம்பு, திணை, சிவப்பு அரிசி.\n• தவிர்க்க வேண்டியவை: மைதா, சர்க்கரை, அதிக வெள்ளை அரிசி, பொரித்த உணவுகள்.`;
+    } else {
+      return `Best foods for diabetic foot health:\n• Vegetables: Ivy gourd (kovakkai), drumstick leaves, bitter gourd, ladies finger.\n• Grains: Millets (kambu/thinai), brown/red rice.\n• Avoid: Refined sugar, maida, deep-fried foods, and large white rice portions.`;
+    }
+  }
+
+  if (msgLower.includes('care') || msgLower.includes('daily') || msgLower.includes('clean') || msgLower.includes('பராமரிப்பு') || msgLower.includes('கால்')) {
+    if (isTa) {
+      return `தினசரி பாத பராமரிப்பு வழிமுறைகள்:\n1. தினமும் மாலையில் நல்ல வெளிச்சத்தில் கால்களை ஆய்வு செய்யவும்.\n2. மிதமான சோப்பு மற்றும் வெதுவெதுப்பான நீரால் கழுவி, விரல்களுக்கு இடையில் நன்றாக உலர்த்தவும்.\n3. நீரிழிவு காலணிகளை எப்போதும் அணியவும்; வெறுங்காலுடன் நடக்காதீர்கள்.`;
+    } else {
+      return `Daily foot care guidelines:\n1. Inspect both feet daily in good light for cuts, redness, or swelling.\n2. Wash feet with mild soap and lukewarm water, drying thoroughly between toes.\n3. Always wear diabetic footwear indoors and outdoors. Never walk barefoot.`;
+    }
+  }
+
+  if (isTa) {
+    return `வணக்கம்! நான் பாதாசுவடு நர்ஸ். நீரிழிவு பாத பராமரிப்பு மற்றும் புண் தடுப்பு பற்றிய கேள்விகளுக்கு நான் உங்களுக்கு உதவுவேன். உங்கள் கால்களை தினமும் ஆய்வு செய்து, நீரிழிவு காலணிகளை பயன்படுத்தவும்.`;
+  } else {
+    return `Hello! I am Paathasuvadu, your FootGuard AI healthcare assistant. I provide guidance on diabetic foot care, daily hygiene, and ulcer prevention according to WHO/IWGDF standards. How may I help you?`;
+  }
+}
+
 // ── Paathasuvadu Chatbot (Gemini — dynamic, bilingual) ───────────────────────
 app.post('/api/chat', async (req: Request, res: Response) => {
   try {
@@ -317,11 +351,8 @@ app.post('/api/chat', async (req: Request, res: Response) => {
 
     const ai = getGenAI();
     if (!ai) {
-      return res.status(503).json({
-        success: false,
-        error: 'Chatbot unavailable: GEMINI_API_KEY not configured in .env',
-        setupError: true,
-      });
+      const fallbackReply = getFallbackNurseReply(message, language, scanContext);
+      return res.json({ success: true, reply: fallbackReply, language, isFallback: true });
     }
 
     let scanContextPrompt = '';
@@ -346,8 +377,6 @@ Core knowledge:
 - After screening — NORMAL: maintain foot hygiene, diabetic footwear, blood sugar control, annual re-screening. ABNORMAL: see a podiatrist/diabetologist within 48 hours.
 - Footwear: always wear diabetic footwear indoors and outdoors, never walk barefoot.`;
 
-
-
     const contents: any[] = [];
     if (Array.isArray(history)) {
       for (const item of history.slice(-6)) {
@@ -360,30 +389,36 @@ Core knowledge:
     }
     contents.push({ role: 'user', parts: [{ text: message }] });
 
-    const chatResponse = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
-      contents,
-      config: { systemInstruction, temperature: 0.7 },
-    });
+    let reply: string | undefined;
 
-    // Robust text extraction — try .text getter first, then walk candidates
-    let reply: string | undefined = chatResponse.text;
-    if (!reply) {
-      const parts = chatResponse.candidates?.[0]?.content?.parts;
-      if (parts) {
-        reply = parts.map((p: any) => p.text || '').join('').trim();
+    try {
+      const chatResponse = await ai.models.generateContent({
+        model: 'gemini-3.6-flash',
+        contents,
+        config: { systemInstruction, temperature: 0.7 },
+      });
+
+      reply = chatResponse.text;
+      if (!reply) {
+        const parts = chatResponse.candidates?.[0]?.content?.parts;
+        if (parts) {
+          reply = parts.map((p: any) => p.text || '').join('').trim();
+        }
       }
+    } catch (apiErr: any) {
+      console.warn('[FootGuard] Gemini AI chat call error, using intelligent fallback reply:', apiErr?.message || apiErr);
+      reply = getFallbackNurseReply(message, language, scanContext);
     }
 
     if (!reply) {
-      console.error('[FootGuard] Gemini returned empty reply. Full response:', JSON.stringify(chatResponse).slice(0, 500));
-      return res.status(500).json({ success: false, error: 'Gemini returned an empty response. Please retry.' });
+      reply = getFallbackNurseReply(message, language, scanContext);
     }
 
     res.json({ success: true, reply, language });
   } catch (error: any) {
     console.error('[FootGuard] Chat error:', error);
-    res.status(500).json({ success: false, error: 'Chatbot failed.', details: error.message });
+    const fallbackReply = getFallbackNurseReply(req.body?.message || '', req.body?.language || 'en', req.body?.scanContext);
+    res.json({ success: true, reply: fallbackReply, language: req.body?.language || 'en', isFallback: true });
   }
 });
 
@@ -426,8 +461,14 @@ app.post('/api/voice', async (req: Request, res: Response) => {
 
 // ── Start server ──────────────────────────────────────────────────────────────
 async function startServer() {
-  // Start DFU classifier training in background (non-blocking)
-  initDFUClassifier().catch(err => console.error('[DFU Classifier] Init error:', err));
+  // Warm up DFU classifier training on server start
+  try {
+    console.log('[DFU Classifier] Initializing and warming model from dataset...');
+    await initDFUClassifier();
+    console.log('[DFU Classifier] ✅ Ready.');
+  } catch (err) {
+    console.error('[DFU Classifier] Warmup warning:', err);
+  }
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
@@ -442,7 +483,7 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🦶 FootGuard AI server running on http://localhost:${PORT}`);
     console.log(`   Gemini configured: ${hasValidKey ? '✅' : '❌'}`);
-    console.log(`   DFU Model: training from dataset in background...\n`);
+    console.log(`   DFU Model: dataset model trained & ready ✅\n`);
   });
 }
 

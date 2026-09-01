@@ -328,13 +328,14 @@ export async function runDFUPrediction(imageBase64: string): Promise<{
   isModelReady: boolean;
 }> {
   if (!model) {
-    await new Promise(r => setTimeout(r, 2000));
-    if (!model) {
-      return { prediction: 'NORMAL', confidence: 0.5, probabilityNormal: 0.5, probabilityAbnormal: 0.5, isModelReady: false };
-    }
+    await initDFUClassifier();
   }
 
-  const base64Clean = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+  if (!model) {
+    return { prediction: 'NORMAL', confidence: 0.5, probabilityNormal: 0.5, probabilityAbnormal: 0.5, isModelReady: false };
+  }
+
+  const base64Clean = imageBase64.replace(/^data:image\/[a-zA-Z+-]+;base64,/, '').replace(/\s/g, '');
   const buffer = Buffer.from(base64Clean, 'base64');
 
   const rawFeatures = await extractFeatures(buffer);
