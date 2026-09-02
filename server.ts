@@ -54,6 +54,18 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// ── Health Check ─────────────────────────────────────────────────────────────
+const healthHandler = (_req: Request, res: Response) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    modelReady: isDFUModelReady(),
+    modelInfo: getDFUModelInfo(),
+  });
+};
+app.get('/health', healthHandler);
+app.get('/api/health', healthHandler);
+
 // ── Gemini client ─────────────────────────────────────────────────────────────
 let genAIClient: GoogleGenAI | null = null;
 function getGenAI(): GoogleGenAI | null {
