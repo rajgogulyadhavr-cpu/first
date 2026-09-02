@@ -48,12 +48,13 @@ export interface GBDTModel {
     precision: number;
     recall: number;
     f1Score: number;
+    rocAuc?: number;
     recallNormal: number;
     recallAbnormal: number;
   };
 }
 
-const CLASSIFIER_VERSION = 5;
+const CLASSIFIER_VERSION = 6;
 let model: GBDTModel | null = null;
 let modelLoading = false;
 const MODEL_CACHE_PATH = path.join(process.cwd(), 'dfu_model_cache.json');

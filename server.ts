@@ -182,7 +182,7 @@ Respond ONLY with valid JSON:
 }`;
 
         const valRes = await ai.models.generateContent({
-          model: 'gemini-3.6-flash',
+          model: 'gemini-2.0-flash',
           contents: [{
             parts: [
               { inlineData: { mimeType: 'image/jpeg', data: base64Clean } },
@@ -379,6 +379,30 @@ function getFallbackNurseReply(message: string, language: string, scanContext?: 
     return `Comprehensive diabetic foot evaluation and wound staging is available at Government Medical College Hospitals and District Headquarter Hospitals across Tamil Nadu. Early clinical consultation prevents complications and amputations.`;
   }
 
+  // DFU / Diabetes general knowledge
+  if (msgLower.includes('dfu') || msgLower.includes('diabetic foot') || msgLower.includes('நீரிழிவு பாதம்') || msgLower.includes('foot ulcer')) {
+    if (isTa) {
+      return `நீரிழிவு பாத புண் (DFU) என்பது நீரிழிவு நோயாளிகளில் நரம்பு பாதிப்பு மற்றும் இரத்த ஓட்டக் குறைபாடு காரணமாக கால்களில் ஏற்படும் புண் ஆகும். இது சரியாக கவனிக்கப்படாவிட்டால் கடுமையான தொற்று மற்றும் அறுவை சிகிச்சைக்கு வழிவகுக்கும். தினமும் கால்களை ஆய்வு செய்வது முக்கியம்.`;
+    }
+    return `A Diabetic Foot Ulcer (DFU) is an open wound or sore on the feet of people with diabetes, caused by peripheral neuropathy (nerve damage) and poor blood circulation. If untreated, it can lead to severe infection and amputation. Early detection through daily foot inspection is critical.`;
+  }
+
+  // Diabetes general info
+  if (msgLower.includes('diabetes') || msgLower.includes('sugar') || msgLower.includes('நீரிழிவு') || msgLower.includes('சர்க்கரை') || msgLower.includes('blood glucose')) {
+    if (isTa) {
+      return `நீரிழிவு நோய் என்பது இரத்தத்தில் சர்க்கரை அளவு அதிகமாக இருக்கும் நாள்பட்ட நிலை ஆகும். கட்டுப்படுத்தப்படாத நீரிழிவு கால் நரம்பு பாதிப்பு, புண், தொற்று ஆகியவற்றுக்கு வழிவகுக்கும். HbA1c < 7% பராமரிப்பது முக்கியம்.`;
+    }
+    return `Diabetes is a chronic condition where blood sugar levels are elevated. Uncontrolled diabetes damages peripheral nerves and blood vessels, increasing the risk of foot ulcers, infections, and amputations. Maintaining HbA1c below 7% significantly reduces complications.`;
+  }
+
+  // Prevention questions
+  if (msgLower.includes('prevent') || msgLower.includes('avoid') || msgLower.includes('protect') || msgLower.includes('தடுப்') || msgLower.includes('பாதுகா')) {
+    if (isTa) {
+      return `நீரிழிவு பாத புண்களை தடுக்க:\n• தினமும் கால்களை ஆய்வு செய்யவும்.\n• நீரிழிவு காலணிகளை அணியவும்.\n• வெறுங்காலுடன் நடக்காதீர்கள்.\n• இரத்த சர்க்கரையை கட்டுப்படுத்தவும்.\n• கால் நகங்களை நேராக வெட்டவும்.\n• புகைபிடிப்பதை தவிர்க்கவும்.`;
+    }
+    return `To prevent diabetic foot ulcers:\n• Inspect feet daily for cuts, blisters, redness, or swelling.\n• Wear certified diabetic footwear (MCR insole).\n• Never walk barefoot.\n• Maintain blood glucose control (HbA1c < 7%).\n• Cut toenails straight across.\n• Avoid smoking as it impairs circulation.`;
+  }
+
   // General fallback
   if (isTa) {
     return `நீரிழிவு பாத பராமரிப்பு குறித்து நீங்கள் என்னிடம் கேட்கலாம்: தினசரி பராமரிப்பு முறைகள், சிறந்த உணவுப் பழக்கங்கள், காலணிகள், ஆபத்து அறிகுறிகள் அல்லது மருத்துவமனை வழிகாட்டுதல். உங்களுக்கு என்ன உதவி தேவை?`;
@@ -426,7 +450,7 @@ STRICT RULES:
 
       try {
         const chatResponse = await ai.models.generateContent({
-          model: 'gemini-3.6-flash',
+          model: 'gemini-2.0-flash',
           contents,
           config: { systemInstruction, temperature: 0.7 },
         });
@@ -438,8 +462,11 @@ STRICT RULES:
             reply = parts.map((p: any) => p.text || '').join('').trim();
           }
         }
+        if (reply) {
+          console.log(`[Chat] Gemini replied successfully (${reply.length} chars) for: "${message.substring(0, 50)}"`);
+        }
       } catch (apiErr: any) {
-        // Safe fallback without raw Python/API errors
+        console.error(`[Chat] Gemini API error for message "${message.substring(0, 50)}": ${apiErr.message || apiErr}`);
         reply = getFallbackNurseReply(message, language, scanContext);
       }
     }
