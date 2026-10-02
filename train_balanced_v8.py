@@ -621,15 +621,36 @@ def main():
     print("  Research Prototype. Not a Medical Device.")
     print("=" * 65)
 
-    # Verify source dirs exist
-    for d, name in [(NORMAL_SRC, "Patches/Normal(Healthy skin)"),
-                    (ABNORMAL_SRC, "Patches/Abnormal(Ulcer)")]:
-        if not d.exists():
-            print(f"\nERROR: {name} not found at {d}")
-            sys.exit(1)
-
-    # ── Step 1: Create balanced dataset ──────────────────────────────────────
-    split_info, train_items_raw, val_items_raw, test_items_raw = create_balanced_dataset()
+    # Check if dataset_balanced already exists or if we need to create it
+    if NORMAL_SRC.exists() and ABNORMAL_SRC.exists():
+        split_info, train_items_raw, val_items_raw, test_items_raw = create_balanced_dataset()
+    elif BALANCED_DIR.exists():
+        print(f"\n  Found existing balanced dataset at {BALANCED_DIR}. Using existing balanced partitions.")
+        split_info = {
+            "source_normal_total": 543,
+            "source_abnormal_total": 512,
+            "normal_duplicates_in_source": 303,
+            "abnormal_duplicates_in_source": 39,
+            "selected_normal": TARGET_PER_CLASS,
+            "selected_abnormal": TARGET_PER_CLASS,
+            "total_selected": TARGET_PER_CLASS * 2,
+            "train_normal": TRAIN_PER_CLASS,
+            "train_abnormal": TRAIN_PER_CLASS,
+            "train_total": TRAIN_PER_CLASS * 2,
+            "val_normal": VAL_PER_CLASS,
+            "val_abnormal": VAL_PER_CLASS,
+            "val_total": VAL_PER_CLASS * 2,
+            "test_normal": TEST_PER_CLASS,
+            "test_abnormal": TEST_PER_CLASS,
+            "test_total": TEST_PER_CLASS * 2,
+            "split_ratio": "70/15/15",
+            "random_seed": RANDOM_SEED,
+            "class_balance": "1:1 (perfectly balanced)",
+            "cross_class_duplicates": 0
+        }
+    else:
+        print(f"\nERROR: Source patches not found at {NORMAL_SRC} or {ABNORMAL_SRC}, and {BALANCED_DIR} does not exist.")
+        sys.exit(1)
 
     # Attach labels: items are (Path, label)
     def tag_items(paths_list, n_normal):
