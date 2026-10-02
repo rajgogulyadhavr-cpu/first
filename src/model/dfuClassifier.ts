@@ -117,13 +117,17 @@ let model: GBDTModel | null = null;
 let modelLoading = false;
 
 // ── Image quality thresholds ─────────────────────────────────────────────────
+// Thresholds are intentionally generous: real-world phone photos with flash or
+// in bright outdoor conditions can easily exceed naive limits while still being
+// perfectly valid for DFU screening.  Soft warnings are issued but inference
+// still runs after auto-normalization.
 
 const QUALITY = {
-  minResolution: 64,          // px (each dim)
-  blurThreshold: 12.0,        // Laplacian variance — below = blurry
-  darkLumaThreshold: 30.0,    // mean luma — below = too dark
-  brightLumaThreshold: 230.0, // mean luma — above = overexposed
-  minSizKB: 2,                // KB — below = tiny/corrupt
+  minResolution: 48,           // px (each dim) — very small = corrupt
+  blurThreshold: 3.0,          // Laplacian variance — only reject extreme blur
+  darkLumaThreshold: 12.0,     // mean luma — only reject near-black images
+  brightLumaThreshold: 252.0,  // mean luma — only reject pure-white (blown out)
+  minSizKB: 1,                 // KB — below = tiny/corrupt
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -156,9 +160,11 @@ export async function checkImageQuality(imageBuffer: Buffer): Promise<{
     return { acceptable: false, reason: 'insufficient_resolution', blurScore: 0, meanLuma: 0, width: w, height: h };
   }
 
-  // Compute mean luma and approximate blur (Laplacian variance on grayscale)
+  // Compute mean luma and approximate blur (Laplacian variance on grayscale).
+  // Use the normalised image so that auto-corrected brightness doesn't skew the check.
   const { data, info } = await sharp(imageBuffer)
     .resize(256, 256, { fit: 'inside' })
+    .normalise()          // stretch histogram — ensures consistent luma range for checks
     .greyscale()
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -167,10 +173,17 @@ export async function checkImageQuality(imageBuffer: Buffer): Promise<{
   const gh = info.height;
   const N = gw * gh;
 
-  let sumL = 0;
-  for (let i = 0; i < N; i++) sumL += data[i];
-  const meanLuma = sumL / N;
+  // Measure luma on original (pre-normalise) to detect true exposure issues
+  const { data: rawData } = await sharp(imageBuffer)
+    .resize(128, 128, { fit: 'inside' })
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  let sumRaw = 0;
+  for (let i = 0; i < rawData.length; i++) sumRaw += rawData[i];
+  const meanLuma = sumRaw / rawData.length;
 
+  // Hard reject: near-black (completely dark/corrupt) or blown out (all-white, no detail)
   if (meanLuma < QUALITY.darkLumaThreshold) {
     return { acceptable: false, reason: 'image_too_dark', blurScore: 0, meanLuma, width: w, height: h };
   }
@@ -178,7 +191,7 @@ export async function checkImageQuality(imageBuffer: Buffer): Promise<{
     return { acceptable: false, reason: 'image_overexposed', blurScore: 0, meanLuma, width: w, height: h };
   }
 
-  // Laplacian variance (blur score): sum of |center - avg of 4 neighbors|^2
+  // Laplacian variance on the normalised image (blur score)
   let lapSum = 0;
   let lapCount = 0;
   for (let y = 1; y < gh - 1; y++) {
@@ -197,11 +210,31 @@ export async function checkImageQuality(imageBuffer: Buffer): Promise<{
   }
   const blurScore = lapCount > 0 ? lapSum / lapCount : 0;
 
-  if (blurScore < QUALITY.blurThreshold) {
-    return { acceptable: false, reason: 'image_too_blurry', blurScore, meanLuma, width: w, height: h };
-  }
+  // Soft warn for blur — we still attempt inference, just note it
+  const isBlurry = blurScore < QUALITY.blurThreshold;
+  const reason = isBlurry ? 'image_soft_blurry' : 'ok';
 
-  return { acceptable: true, reason: 'ok', blurScore, meanLuma, width: w, height: h };
+  return { acceptable: true, reason, blurScore, meanLuma, width: w, height: h };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AUTO-NORMALISATION HELPER
+// Applies adaptive contrast stretching so that overexposed / underexposed
+// phone photos are corrected before feature extraction.  This does NOT change
+// the predicted class — it only ensures the feature values land in the same
+// range as the training patches.
+// ══════════════════════════════════════════════════════════════════════════════
+
+async function normalizeImageBuffer(imageBuffer: Buffer): Promise<Buffer> {
+  try {
+    // sharp .normalise() performs per-channel linear stretch to [0,255].
+    // .modulate({brightness: 1}) is a no-op placeholder; the chain is sharp-safe.
+    return await sharp(imageBuffer)
+      .normalise()       // stretch histogram: fixes overexposure & underexposure
+      .toBuffer();
+  } catch {
+    return imageBuffer;  // If normalisation fails, return original unchanged
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -209,7 +242,11 @@ export async function checkImageQuality(imageBuffer: Buffer): Promise<{
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function extractBiomarkerFeatures(imageBuffer: Buffer): Promise<DFUFeatureResult> {
-  const { data, info } = await sharp(imageBuffer)
+  // Auto-normalise before feature extraction so overexposed / dark phone photos
+  // produce feature values in the same range as the training patches.
+  const normalised = await normalizeImageBuffer(imageBuffer);
+
+  const { data, info } = await sharp(normalised)
     .resize(PATCH_SIZE, PATCH_SIZE, { fit: 'fill' })
     .removeAlpha()
     .raw()

@@ -256,17 +256,22 @@ Respond ONLY with valid JSON:
       qualityIssue
     } = dfuResult;
 
-    // Handle image quality issues returned from the classifier
-    if (prediction === 'UNCERTAIN' && qualityIssue && qualityIssue !== 'model_not_loaded') {
+    // Handle HARD image quality issues that truly prevent prediction.
+    // Note: image_soft_blurry is a WARNING only — inference still ran, so we
+    // do NOT reject here.  Only block on genuine failures (model_not_loaded,
+    // unreadable_image, image_too_small, insufficient_resolution).
+    const HARD_QUALITY_BLOCKS = new Set([
+      'model_not_loaded', 'unreadable_image', 'image_too_small', 'insufficient_resolution',
+    ]);
+    if (prediction === 'UNCERTAIN' && qualityIssue && HARD_QUALITY_BLOCKS.has(qualityIssue)) {
       const qualityMessages: Record<string, { en: string; ta: string }> = {
-        image_too_blurry:          { en: 'Image is too blurry. Please capture a sharper photo.', ta: 'படம் மங்கலாக உள்ளது. தெளிவான படம் எடுக்கவும்.' },
         image_too_dark:            { en: 'Image is too dark. Please use better lighting.', ta: 'படம் மிகவும் இருண்டுள்ளது. நல்ல வெளிச்சத்தில் எடுக்கவும்.' },
-        image_overexposed:         { en: 'Image is overexposed. Please avoid direct flash.', ta: 'படம் மிகவும் வெளிர்ந்துள்ளது. நேரடி ஃப்ளாஷை தவிர்க்கவும்.' },
         insufficient_resolution:   { en: 'Image resolution is too low. Please use a higher-quality camera.', ta: 'படத்தின் தெளிவு மிகவும் குறைவாக உள்ளது.' },
         image_too_small:           { en: 'Image is too small or corrupt.', ta: 'படம் மிகவும் சிறியதாக உள்ளது.' },
-        unreadable_image:          { en: 'Image cannot be read. Please try another format.', ta: 'படத்தை படிக்க முடியவில்லை.' },
+        unreadable_image:          { en: 'Image cannot be read. Please try a JPEG or PNG photo.', ta: 'படத்தை படிக்க முடியவில்லை. JPEG அல்லது PNG படத்தை பயன்படுத்தவும்.' },
+        model_not_loaded:          { en: 'AI model is still loading. Please wait a moment and retry.', ta: 'AI மாதிரி ஏற்றப்படுகிறது. சிறிது நேரம் காத்திருந்து மீண்டும் முயற்சிக்கவும்.' },
       };
-      const qMsg = qualityMessages[qualityIssue] ?? { en: 'Please capture a clearer foot image.', ta: 'தெளிவான காலின் படம் எடுக்கவும்.' };
+      const qMsg = qualityMessages[qualityIssue] ?? { en: 'Please capture a clear foot photo and try again.', ta: 'தெளிவான காலின் படம் எடுத்து மீண்டும் முயற்சிக்கவும்.' };
       return res.json({
         success: false,
         qualityError: true,
