@@ -17,7 +17,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import sharp from 'sharp';
+import sharp, { type Metadata } from 'sharp';
 
 // ── Type definitions ─────────────────────────────────────────────────────────
 
@@ -97,11 +97,15 @@ const TILE_STRIDE = 64;
  *  and partial foot crops where the skin mask may be conservatively estimated. */
 const MIN_SKIN_FRACTION = 0.08;
 
-/** Default threshold if model JSON doesn't contain a usable calibrated value */
-const DEFAULT_THRESHOLD = 0.50;
+/** Default threshold if model JSON doesn't contain a usable calibrated value.
+ *  Set conservatively at 0.65 so that normal/healthy foot images are NOT
+ *  falsely flagged.  ABNORMAL requires probAbnormal > 0.65+0.12 = 0.77.
+ *  A genuine DFU patch has very strong signal (dark necrosis, extreme redness)
+ *  and will comfortably exceed this bar.  Normal toes/nails/shadows will not. */
+const DEFAULT_THRESHOLD = 0.65;
 
-/** Default uncertain zone half-width around threshold */
-const DEFAULT_UNCERTAIN_HALF = 0.07;
+/** Uncertain zone half-width.  Wide enough to absorb borderline cases. */
+const DEFAULT_UNCERTAIN_HALF = 0.12;
 
 /**
  * Maximum raw-probability value that is still considered "reachable" for the
@@ -110,6 +114,15 @@ const DEFAULT_UNCERTAIN_HALF = 0.07;
  * effectively making ABNORMAL predictions impossible.  We cap it at 0.97.
  */
 const UNCERTAIN_HIGH_CAP = 0.97;
+
+/**
+ * Minimum fraction of patches that must individually score > 0.50 before the
+ * aggregated result can reach ABNORMAL.  This prevents 1-2 noisy patches
+ * (toenails, shadows, creases) from dragging a healthy foot into ABNORMAL.
+ * e.g. if only 10% of patches are high-signal, P_MAJORITY_GATE = 0.25 blocks
+ * the ABNORMAL path even if the aggregated probability exceeds the threshold.
+ */
+const P_MAJORITY_GATE = 0.25;
 
 // ── Model state ──────────────────────────────────────────────────────────────
 
@@ -147,7 +160,7 @@ export async function checkImageQuality(imageBuffer: Buffer): Promise<{
     return { acceptable: false, reason: 'image_too_small', blurScore: 0, meanLuma: 0, width: 0, height: 0 };
   }
 
-  let meta: sharp.Metadata;
+  let meta: Metadata;
   try {
     meta = await sharp(imageBuffer).metadata();
   } catch {
@@ -566,19 +579,37 @@ async function runPatchTilingInference(imageBuffer: Buffer): Promise<{
     return { probAbnormal, hotspotX, hotspotY, patchesAnalyzed: 1, patchProbabilities: [probAbnormal] };
   }
 
-  // Aggregation: weighted-mean (higher-risk patches weighted more).
-  // This is more clinically conservative than a plain mean — a single high-risk
-  // patch should elevate the overall score more than a plain average would allow.
-  // Weight = exp(3 * p) so that patches near p=1.0 contribute ~exp(3)≈20× more
-  // than patches near p=0.0.  The denominator normalises back to [0,1].
-  let weightedSum = 0;
-  let weightTotal = 0;
-  for (const p of validProbs) {
-    const w = Math.exp(3 * p);
-    weightedSum += w * p;
-    weightTotal += w;
-  }
-  const aggregatedProb = weightTotal > 0 ? weightedSum / weightTotal : 0.5;
+  // ── Aggregation: 75th-percentile (P75) with majority gate ─────────────────
+  //
+  // WHY P75 instead of mean or exponential-weighted-mean:
+  //   Real-world full-foot photos contain patches over toenails, inter-digit
+  //   creases, and shadows.  These share visual features with DFU lesions
+  //   (dark regions, high contrast, high redness) but are NOT ulcers.  A
+  //   mean or exponential-weighted aggregation amplifies these 1-2 noisy
+  //   patches across the entire result, causing false positives on healthy feet.
+  //
+  //   P75 uses the 75th-percentile value: it represents the "upper-typical"
+  //   patch probability while ignoring the top 25% of outlier patches
+  //   (nails, creases).  For a genuinely ulcerated foot where MOST patches
+  //   are high-signal, P75 will still be very high (>0.77).
+  //   For a healthy foot, even if a few patches are noisy, P75 stays low.
+  //
+  // MAJORITY GATE:
+  //   Additionally require that at least P_MAJORITY_GATE fraction of patches
+  //   score > 0.50.  This further prevents isolated high-probability patches
+  //   from triggering ABNORMAL on a largely-normal foot.
+
+  const sorted = [...validProbs].sort((a, b) => a - b);
+  const p75Idx = Math.min(Math.floor(sorted.length * 0.75), sorted.length - 1);
+  const p75Prob = sorted[p75Idx];
+
+  // Majority gate: what fraction of patches exceed 0.50?
+  const highFraction = validProbs.filter(p => p > 0.50).length / validProbs.length;
+  const majorityGatePassed = highFraction >= P_MAJORITY_GATE;
+
+  // If the majority gate fails, cap the probability at 0.50 (maximum NORMAL/UNCERTAIN)
+  // so a few outlier patches cannot trigger ABNORMAL.
+  const aggregatedProb = majorityGatePassed ? p75Prob : Math.min(p75Prob, 0.50);
 
   return {
     probAbnormal: aggregatedProb,

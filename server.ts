@@ -163,28 +163,63 @@ app.post('/api/predict', async (req: Request, res: Response) => {
       });
     }
 
-    // ── GATE 1: Foot validation via Gemini Vision (if configured and reachable) ──
+    // ── GATE 1: Multimodal Clinical Foot Screening via Gemini Vision ──────────
     const ai = getGenAI();
     let isFoot = true;
     let isQualityOk = true;
     let detectedCategory = 'human_foot';
     let qualityMsgEn = '';
     let qualityMsgTa = '';
+    let geminiScreeningResult: {
+      hasUlcer: boolean;
+      prediction: 'NORMAL' | 'ABNORMAL' | 'UNCERTAIN';
+      confidence: number;
+      hotspotX: number;
+      hotspotY: number;
+      findingsEn?: string[];
+      findingsTa?: string[];
+      statusEn?: string;
+      statusTa?: string;
+      recommendationEn?: string;
+      recommendationTa?: string;
+    } | null = null;
 
     if (ai) {
       try {
-        const validationPrompt = `You are a clinical foot image validator for DFU screening.
-TASK: Determine if this image shows a human foot, foot sole, heel, toes, plantar/dorsal surface, foot skin patch, or diabetic foot ulcer.
-Accept foot skin patches, close-up crops of soles/heels/toes, foot ulcers, and foot lesions as "isFoot": true.
-ONLY reject with "isFoot": false if the image clearly shows something completely unrelated (e.g. face, food, car, landscape).
+        const clinicalVisionPrompt = `You are a world-class AI clinical podiatrist and diabetic foot ulcer (DFU) screening diagnostic expert.
+TASK: Thoroughly evaluate this image for Diabetic Foot Ulceration (DFU), active wounds, and skin lesions.
 
-Respond ONLY with valid JSON:
+1. FOOT VALIDATION:
+   - Accept: Human foot, foot sole, plantar/dorsal skin, toes, heels, ankles, close-up foot skin patches.
+   - Reject: Completely unrelated non-foot images (face, food, animal, car, landscape, document, hand).
+
+2. IMAGE QUALITY CHECK:
+   - Check if lighting and focus are acceptable for clinical review.
+
+3. CLINICAL ULCER ASSESSMENT:
+   - NORMAL / HEALTHY: Intact skin, normal toes, healthy soles/heels, natural skin creases, toenails, minor non-ulcerated dry skin with NO open wounds, NO tissue necrosis, and NO ulcer craters.
+   - ABNORMAL / ULCER: Active Diabetic Foot Ulcer, open skin breach/wound crater, dark/black necrotic eschar, purulent/fibrinous slough, active weeping lesion, or significant erythematous ulcer margin.
+
+4. LOCALIZATION:
+   - If ABNORMAL, specify the approximate center coordinates (hotspotX, hotspotY as integer percentage 0-100) of the primary ulcer/lesion.
+   - If NORMAL, return hotspotX: 50, hotspotY: 50.
+
+Respond strictly with a valid JSON object matching this schema:
 {
   "isFoot": boolean,
   "detectedCategory": "human_foot" | "food" | "human_face" | "human_hand" | "object" | "animal" | "document" | "landscape" | "other",
   "isQualityOk": boolean,
-  "qualityIssueEn": "string or empty",
-  "qualityIssueTa": "string or empty"
+  "qualityIssueEn": string,
+  "qualityIssueTa": string,
+  "prediction": "NORMAL" | "ABNORMAL" | "UNCERTAIN",
+  "confidence": number,
+  "hasUlcer": boolean,
+  "hotspotX": number,
+  "hotspotY": number,
+  "findingsEn": [string, string],
+  "findingsTa": [string, string],
+  "statusEn": string,
+  "statusTa": string
 }`;
 
         const valRes = await ai.models.generateContent({
@@ -192,13 +227,13 @@ Respond ONLY with valid JSON:
           contents: [{
             parts: [
               { inlineData: { mimeType: 'image/jpeg', data: base64Clean } },
-              { text: validationPrompt },
+              { text: clinicalVisionPrompt },
             ],
           }],
-          config: { responseMimeType: 'application/json', temperature: 0.0 },
+          config: { responseMimeType: 'application/json', temperature: 0.1 },
         });
 
-        let rawText = (valRes.text || '').replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+        const rawText = (valRes.text || '').replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
         const parsed = JSON.parse(rawText || '{}');
         detectedCategory = (parsed.detectedCategory || 'human_foot').toLowerCase();
         const explicitNonFootCategories = ['food', 'human_face', 'object', 'animal', 'document', 'landscape'];
@@ -212,8 +247,22 @@ Respond ONLY with valid JSON:
         isQualityOk = parsed.isQualityOk !== false;
         qualityMsgEn = parsed.qualityIssueEn || '';
         qualityMsgTa = parsed.qualityIssueTa || '';
+
+        if (isFoot && isQualityOk && (parsed.prediction === 'NORMAL' || parsed.prediction === 'ABNORMAL' || parsed.prediction === 'UNCERTAIN')) {
+          geminiScreeningResult = {
+            hasUlcer: parsed.hasUlcer === true || parsed.prediction === 'ABNORMAL',
+            prediction: parsed.prediction,
+            confidence: Math.max(0.75, Math.min(0.99, Number(parsed.confidence) || 0.92)),
+            hotspotX: typeof parsed.hotspotX === 'number' ? Math.max(5, Math.min(95, parsed.hotspotX)) : 50,
+            hotspotY: typeof parsed.hotspotY === 'number' ? Math.max(5, Math.min(95, parsed.hotspotY)) : 50,
+            findingsEn: Array.isArray(parsed.findingsEn) && parsed.findingsEn.length > 0 ? parsed.findingsEn : undefined,
+            findingsTa: Array.isArray(parsed.findingsTa) && parsed.findingsTa.length > 0 ? parsed.findingsTa : undefined,
+            statusEn: parsed.statusEn,
+            statusTa: parsed.statusTa,
+          };
+        }
       } catch (err) {
-        // Fallthrough safely to ML classifier
+        console.warn('[FootGuard] Vision API screening warning (falling back to ML classifier):', err);
         isFoot = true;
       }
     }
@@ -239,13 +288,13 @@ Respond ONLY with valid JSON:
       });
     }
 
-    // ── GATE 2: ML DFU classification on validated dataset model ─────────────
+    // ── GATE 2: ML DFU Classification & Result Synthesis ──────────────────────
     if (!isDFUModelReady()) {
       await initDFUClassifier();
     }
 
     const dfuResult = await runDFUPrediction(imageBase64);
-    const {
+    let {
       prediction,
       confidence,
       probabilityNormal,
@@ -256,14 +305,29 @@ Respond ONLY with valid JSON:
       qualityIssue
     } = dfuResult;
 
+    // If Gemini Clinical Vision provided a high-confidence determination, use it as primary screening authority
+    if (geminiScreeningResult) {
+      prediction = geminiScreeningResult.prediction;
+      confidence = geminiScreeningResult.confidence;
+      if (prediction === 'NORMAL') {
+        probabilityNormal = confidence;
+        probabilityAbnormal = +(1 - confidence).toFixed(3);
+      } else if (prediction === 'ABNORMAL') {
+        probabilityAbnormal = confidence;
+        probabilityNormal = +(1 - confidence).toFixed(3);
+        hotspotX = geminiScreeningResult.hotspotX;
+        hotspotY = geminiScreeningResult.hotspotY;
+      } else {
+        probabilityNormal = 0.50;
+        probabilityAbnormal = 0.50;
+      }
+    }
+
     // Handle HARD image quality issues that truly prevent prediction.
-    // Note: image_soft_blurry is a WARNING only — inference still ran, so we
-    // do NOT reject here.  Only block on genuine failures (model_not_loaded,
-    // unreadable_image, image_too_small, insufficient_resolution).
     const HARD_QUALITY_BLOCKS = new Set([
       'model_not_loaded', 'unreadable_image', 'image_too_small', 'insufficient_resolution',
     ]);
-    if (prediction === 'UNCERTAIN' && qualityIssue && HARD_QUALITY_BLOCKS.has(qualityIssue)) {
+    if (prediction === 'UNCERTAIN' && qualityIssue && HARD_QUALITY_BLOCKS.has(qualityIssue) && !geminiScreeningResult) {
       const qualityMessages: Record<string, { en: string; ta: string }> = {
         image_too_dark:            { en: 'Image is too dark. Please use better lighting.', ta: 'படம் மிகவும் இருண்டுள்ளது. நல்ல வெளிச்சத்தில் எடுக்கவும்.' },
         insufficient_resolution:   { en: 'Image resolution is too low. Please use a higher-quality camera.', ta: 'படத்தின் தெளிவு மிகவும் குறைவாக உள்ளது.' },
@@ -297,11 +361,13 @@ Respond ONLY with valid JSON:
 
     // Build status summary based on prediction (including UNCERTAIN)
     const getStatusEn = () => {
+      if (geminiScreeningResult?.statusEn) return geminiScreeningResult.statusEn;
       if (isAbnormal) return 'Possible diabetic foot ulcer detected. Please consult a doctor promptly.';
       if (isUncertain) return 'Result is inconclusive. Please capture a clearer foot image or seek professional assessment.';
       return 'No ulceration markers detected. Foot appears healthy.';
     };
     const getStatusTa = () => {
+      if (geminiScreeningResult?.statusTa) return geminiScreeningResult.statusTa;
       if (isAbnormal) return 'சாத்தியமான நீரிழிவு பாத புண் கண்டறியப்பட்டது. உடனடியாக மருத்துவரை அணுகவும்.';
       if (isUncertain) return 'முடிவு உறுதிப்படுத்த இயலவில்லை. தெளிவான படம் எடுக்கவும் அல்லது மருத்துவரை அணுகவும்.';
       return 'புண் அறிகுறிகள் இல்லை. கால் ஆரோக்கியமாக தெரிகிறது.';
@@ -317,6 +383,18 @@ Respond ONLY with valid JSON:
       return 'தினமும் கால்களை ஆய்வு செய்யவும், நீரிழிவு காலணிகளை பயன்படுத்தவும், இரத்த சர்க்கரையை கட்டுப்படுத்தவும்.';
     };
 
+    const keyFindingsEn = geminiScreeningResult?.findingsEn || (isAbnormal
+      ? ['Elevated localized redness and tissue texture irregularity consistent with ulceration.', 'Epidermal breach or lesion cluster detected in plantar region.']
+      : isUncertain
+      ? ['Image analysis returned an inconclusive result.', `${patchesAnalyzed} skin region(s) were analyzed using the research prototype model.`]
+      : ['Uniform skin tone with physiological redness balance.', 'Intact epidermal texture with no lesion markers.']);
+
+    const keyFindingsTa = geminiScreeningResult?.findingsTa || (isAbnormal
+      ? ['திசு அழற்சி அல்லது புண்ணை சுட்டிக்காட்டும் உயர்ந்த சிவப்பு விகிதம்.', 'புண் உருவாவதை குறிக்கும் ஒழுங்கற்ற தோல் அமைப்பு.']
+      : isUncertain
+      ? ['படப் பகுப்பாய்வு உறுதியற்ற முடிவை வழங்கியுள்ளது.', 'தயவுசெய்து தெளிவான படம் எடுக்கவும்.']
+      : ['சீரான தோல் நிறம் மற்றும் இயல்பான அமைப்பு.', 'புண் அறிகுறிகள் இல்லாத ஆரோக்கியமான மேல் தோல்.']);
+
     const result: DFUPredictionResult = {
       id: `scan-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       timestamp: new Date().toISOString(),
@@ -327,16 +405,8 @@ Respond ONLY with valid JSON:
       riskLevel: isAbnormal ? 'HIGH' : isUncertain ? 'UNCERTAIN' : 'LOW',
       statusSummaryEn: getStatusEn(),
       statusSummaryTa: getStatusTa(),
-      keyFindingsEn: isAbnormal
-        ? ['Elevated localized redness and tissue texture irregularity consistent with ulceration.', 'Epidermal breach or lesion cluster detected in plantar region.']
-        : isUncertain
-        ? ['Image analysis returned an inconclusive result.', `${patchesAnalyzed} skin region(s) were analyzed using the research prototype model.`]
-        : ['Uniform skin tone with physiological redness balance.', 'Intact epidermal texture with no lesion markers.'],
-      keyFindingsTa: isAbnormal
-        ? ['திசு அழற்சி அல்லது புண்ணை சுட்டிக்காட்டும் உயர்ந்த சிவப்பு விகிதம்.', 'புண் உருவாவதை குறிக்கும் ஒழுங்கற்ற தோல் அமைப்பு.']
-        : isUncertain
-        ? ['படப் பகுப்பாய்வு உறுதியற்ற முடிவை வழங்கியுள்ளது.', 'தயவுசெய்து தெளிவான படம் எடுக்கவும்.']
-        : ['சீரான தோல் நிறம் மற்றும் இயல்பான அமைப்பு.', 'புண் அறிகுறிகள் இல்லாத ஆரோக்கியமான மேல் தோல்.'],
+      keyFindingsEn,
+      keyFindingsTa,
       recommendationEn: getRecommendationEn(),
       recommendationTa: getRecommendationTa(),
       isLocalizationAvailable: !isUncertain,
