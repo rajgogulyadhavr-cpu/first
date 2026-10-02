@@ -1,0 +1,12 @@
+FootGuard AI -- Threshold Calibration Report (v8)
+=======================================================
+Method:            Youden's J on Balanced Validation Set
+Optimal threshold: 0.9878
+Uncertain zone:    [0.9378, 1.0000]
+Youden's J:        0.9444
+Sensitivity (TPR): 94.4%
+Specificity (TNR): 100.0%
+ROC-AUC:           99.77%
+
+Threshold chosen to maximize Youden's J on balanced val set.
+NOT chosen to bias toward either Normal or Abnormal.

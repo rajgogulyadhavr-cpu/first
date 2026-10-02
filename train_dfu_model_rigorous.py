@@ -1,21 +1,3 @@
-"""
-FootGuard AI — Rigorous Clinical DFU Machine Learning Model Training (v6)
-
-Key Principles:
-1. Strict No-Leakage Cross-Validation & Validation Split:
-   - Augmentation is applied ONLY to the training splits, NEVER to the validation set.
-   - Validation set comprises 100% genuine, unaugmented original dataset patches.
-2. Explicit Class Mapping:
-   - Class 0: 'Normal(Healthy skin)' (54 original images)
-   - Class 1: 'Abnormal(Ulcer)' (512 original images)
-3. 19 Biomarker Clinical Features with Eroded Skin Masking:
-   - Mathematically identical between Python PIL and Node.js Sharp.
-4. Balanced Ensemble:
-   - Gradient Boosting Classifier trained on balanced folds.
-   - Complete confusion matrix, classification report, and ROC-AUC evaluation.
-5. Export format matches dfuClassifier.ts JSON schema.
-"""
-
 import os
 import json
 import numpy as np

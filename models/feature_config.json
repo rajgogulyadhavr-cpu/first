@@ -1,0 +1,26 @@
+{
+  "n_features": 19,
+  "feature_names": [
+    "mean_r",
+    "mean_g",
+    "mean_b",
+    "std_r",
+    "std_g",
+    "std_b",
+    "mean_luma",
+    "std_luma",
+    "redness_ratio",
+    "nri",
+    "exr",
+    "skin_contrast",
+    "dark_in_skin",
+    "ulcer_red_spots",
+    "edge_energy",
+    "edge_std",
+    "mean_block_var",
+    "max_block_var",
+    "center_diff"
+  ],
+  "description": "19 eroded-skin biomarker features matching dfuClassifier.ts v8",
+  "version": "v8"
+}

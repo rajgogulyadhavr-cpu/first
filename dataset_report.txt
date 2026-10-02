@@ -1,0 +1,18 @@
+FootGuard AI — Dataset Report
+========================================
+total_normal: 240
+total_abnormal: 473
+total_valid: 713
+corrupted: 0
+duplicates: 342
+train_normal: 168
+train_abnormal: 331
+train_total: 499
+val_normal: 36
+val_abnormal: 70
+val_total: 106
+test_normal: 36
+test_abnormal: 72
+test_total: 108
+split_ratio: 70/15/15
+random_seed: 42

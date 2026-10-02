@@ -1,0 +1,10 @@
+{
+  "resize_width": 128,
+  "resize_height": 128,
+  "resize_method": "BILINEAR",
+  "color_mode": "RGB",
+  "normalize": true,
+  "skin_mask": "eroded_4neighbor",
+  "eroded_min_pixels": 200,
+  "version": "v8"
+}

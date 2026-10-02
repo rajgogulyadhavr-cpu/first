@@ -672,6 +672,8 @@ export const FootScanner: React.FC<FootScannerProps> = ({
             className={`p-6 sm:p-8 rounded-3xl shadow-xl border-2 transition-all ${
               result.prediction === 'NORMAL'
                 ? 'bg-gradient-to-br from-emerald-50 via-teal-50/60 to-white border-emerald-300 text-emerald-950'
+                : result.prediction === 'UNCERTAIN'
+                ? 'bg-gradient-to-br from-amber-50 via-yellow-50/60 to-white border-amber-300 text-amber-950'
                 : 'bg-gradient-to-br from-rose-50 via-red-50/60 to-white border-rose-300 text-rose-950'
             }`}
           >
@@ -679,11 +681,13 @@ export const FootScanner: React.FC<FootScannerProps> = ({
               <div className="flex items-center space-x-3.5">
                 <div
                   className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white shadow-md ${
-                    result.prediction === 'NORMAL' ? 'bg-emerald-600' : 'bg-rose-600'
+                    result.prediction === 'NORMAL' ? 'bg-emerald-600' : result.prediction === 'UNCERTAIN' ? 'bg-amber-500' : 'bg-rose-600'
                   }`}
                 >
                   {result.prediction === 'NORMAL' ? (
                     <CheckCircle2 className="w-7 h-7" />
+                  ) : result.prediction === 'UNCERTAIN' ? (
+                    <Info className="w-7 h-7" />
                   ) : (
                     <AlertTriangle className="w-7 h-7" />
                   )}
@@ -695,6 +699,8 @@ export const FootScanner: React.FC<FootScannerProps> = ({
                   <h3 className="text-xl sm:text-2xl font-black tracking-tight">
                     {result.prediction === 'NORMAL'
                       ? (language === 'ta' ? '🟢 NORMAL — ஆரோக்கியமான தோல்' : '🟢 NORMAL — Healthy skin')
+                      : result.prediction === 'UNCERTAIN'
+                      ? (language === 'ta' ? '🟡 UNCERTAIN — உறுதியற்ற முடிவு' : '🟡 UNCERTAIN — Inconclusive result')
                       : (language === 'ta' ? '🔴 ABNORMAL — சாத்தியமான புண்' : '🔴 ABNORMAL — Possible ulcer')}
                   </h3>
                 </div>
@@ -712,10 +718,10 @@ export const FootScanner: React.FC<FootScannerProps> = ({
                   <div className="text-[10px] text-slate-500 font-semibold">{t.riskAssessment}</div>
                   <div
                     className={`text-xs font-bold ${
-                      result.riskLevel === 'HIGH' ? 'text-rose-600' : 'text-emerald-600'
+                      result.riskLevel === 'HIGH' ? 'text-rose-600' : result.riskLevel === 'UNCERTAIN' ? 'text-amber-600' : 'text-emerald-600'
                     }`}
                   >
-                    {result.riskLevel === 'HIGH' ? t.highRisk : t.lowRisk}
+                    {result.riskLevel === 'HIGH' ? t.highRisk : result.riskLevel === 'UNCERTAIN' ? (language === 'ta' ? 'நிச்சயமற்றது' : 'Uncertain') : t.lowRisk}
                   </div>
                 </div>
               </div>
@@ -867,6 +873,8 @@ export const FootScanner: React.FC<FootScannerProps> = ({
                   className={`px-4 py-2.5 rounded-xl font-bold text-xs shadow-md flex items-center space-x-1.5 transition-all cursor-pointer ${
                     result.prediction === 'ABNORMAL'
                       ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/30 animate-pulse'
+                      : result.prediction === 'UNCERTAIN'
+                      ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-amber-500/30'
                       : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
                   }`}
                 >

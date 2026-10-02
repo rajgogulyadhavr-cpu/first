@@ -1,6 +1,6 @@
 export type Language = 'en' | 'ta';
 
-export type DFUClass = 'NORMAL' | 'ABNORMAL';
+export type DFUClass = 'NORMAL' | 'ABNORMAL' | 'UNCERTAIN';
 
 export interface ImageQualityReport {
   isAcceptable: boolean;
@@ -43,7 +43,7 @@ export interface DFUPredictionResult {
   confidence: number; // 0.0 to 1.0 (actual model metric)
   probabilityNormal: number;
   probabilityAbnormal: number;
-  riskLevel: 'LOW' | 'HIGH';
+  riskLevel: 'LOW' | 'HIGH' | 'UNCERTAIN';
   statusSummaryEn: string;
   statusSummaryTa: string;
   keyFindingsEn: string[];

@@ -1,0 +1,30 @@
+FootGuard AI -- Balanced Dataset Report (v8)
+==================================================
+source_normal_total: 543
+source_abnormal_total: 512
+normal_duplicates_in_source: 303
+abnormal_duplicates_in_source: 39
+selected_normal: 240
+selected_abnormal: 240
+total_selected: 480
+train_normal: 168
+train_abnormal: 168
+train_total: 336
+val_normal: 36
+val_abnormal: 36
+val_total: 72
+test_normal: 36
+test_abnormal: 36
+test_total: 72
+split_ratio: 70/15/15
+random_seed: 42
+class_balance: 1:1 (perfectly balanced)
+cross_class_duplicates: 0
+
+CLASS BALANCE VERIFICATION:
+  train/normal:       168
+  train/abnormal:     168
+  validation/normal:  36
+  validation/abnormal:36
+  test/normal:        36
+  test/abnormal:      36

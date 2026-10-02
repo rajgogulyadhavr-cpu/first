@@ -1,0 +1,12 @@
+FootGuard AI -- Classification Report (Test Set, Balanced v8)
+=======================================================
+Threshold used: 0.9878 (Youden's J on balanced val)
+
+              precision    recall  f1-score   support
+
+      Normal       0.86      1.00      0.92        36
+    Abnormal       1.00      0.83      0.91        36
+
+    accuracy                           0.92        72
+   macro avg       0.93      0.92      0.92        72
+weighted avg       0.93      0.92      0.92        72

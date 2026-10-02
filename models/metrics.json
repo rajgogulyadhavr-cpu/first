@@ -1,0 +1,70 @@
+{
+  "validation": {
+    "split": "Validation Set (Balanced)",
+    "accuracy": 0.9722222222222222,
+    "precision": 1.0,
+    "recall": 0.9444444444444444,
+    "specificity": 1.0,
+    "f1": 0.9714285714285714,
+    "roc_auc": 0.9976851851851851,
+    "confusion_matrix": {
+      "tn": 36,
+      "fp": 0,
+      "fn": 2,
+      "tp": 34
+    },
+    "threshold_used": 0.987795431499247,
+    "classification_report": "              precision    recall  f1-score   support\n\n      Normal       0.95      1.00      0.97        36\n    Abnormal       1.00      0.94      0.97        36\n\n    accuracy                           0.97        72\n   macro avg       0.97      0.97      0.97        72\nweighted avg       0.97      0.97      0.97        72\n"
+  },
+  "test": {
+    "split": "Test Set (Balanced)",
+    "accuracy": 0.9166666666666666,
+    "precision": 1.0,
+    "recall": 0.8333333333333334,
+    "specificity": 1.0,
+    "f1": 0.9090909090909091,
+    "roc_auc": 0.9992283950617283,
+    "confusion_matrix": {
+      "tn": 36,
+      "fp": 0,
+      "fn": 6,
+      "tp": 30
+    },
+    "threshold_used": 0.987795431499247,
+    "classification_report": "              precision    recall  f1-score   support\n\n      Normal       0.86      1.00      0.92        36\n    Abnormal       1.00      0.83      0.91        36\n\n    accuracy                           0.92        72\n   macro avg       0.93      0.92      0.92        72\nweighted avg       0.93      0.92      0.92        72\n"
+  },
+  "cv_accuracy": 0.9494047619047619,
+  "cv_auc": 0.980406746031746,
+  "threshold": {
+    "optimal_threshold": 0.987795431499247,
+    "uncertain_low": 0.9377954314992469,
+    "uncertain_high": 1.0,
+    "youden_j": 0.9444444444444444,
+    "sensitivity": 0.9444444444444444,
+    "specificity": 1.0,
+    "roc_auc": 0.9976851851851851,
+    "method": "Youden's J on balanced validation set"
+  },
+  "dataset": {
+    "source_normal_total": 543,
+    "source_abnormal_total": 512,
+    "normal_duplicates_in_source": 303,
+    "abnormal_duplicates_in_source": 39,
+    "selected_normal": 240,
+    "selected_abnormal": 240,
+    "total_selected": 480,
+    "train_normal": 168,
+    "train_abnormal": 168,
+    "train_total": 336,
+    "val_normal": 36,
+    "val_abnormal": 36,
+    "val_total": 72,
+    "test_normal": 36,
+    "test_abnormal": 36,
+    "test_total": 72,
+    "split_ratio": "70/15/15",
+    "random_seed": 42,
+    "class_balance": "1:1 (perfectly balanced)",
+    "cross_class_duplicates": 0
+  }
+}

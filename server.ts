@@ -6,7 +6,13 @@ import { hospitalsData } from './src/data/hospitalsData.ts';
 import { medicalSourcesData } from './src/data/sourcesData.ts';
 import { modelBenchmarkData } from './src/data/researchData.ts';
 import { DFUPredictionResult } from './src/types.ts';
-import { initDFUClassifier, runDFUPrediction, isDFUModelReady, getDFUModelInfo } from './src/model/dfuClassifier.ts';
+import {
+  initDFUClassifier,
+  runDFUPrediction,
+  isDFUModelReady,
+  getDFUModelInfo,
+  checkImageQuality
+} from './src/model/dfuClassifier.ts';
 
 dotenv.config();
 
@@ -99,8 +105,8 @@ app.get('/api/warmup', async (_req: Request, res: Response) => {
     success: true,
     isWarm: isDFUModelReady(),
     dfuModelInfo: getDFUModelInfo(),
-    model: 'Clinical DFU GBDT Biomarker Model (28 features) + Gemini Vision Gate',
-    status: isDFUModelReady() ? 'DFU model ready' : 'DFU model loading...',
+    model: 'FootGuard GBDT Balanced Model v8 (19 features, 240×240 balanced dataset, Youden-calibrated threshold, patch-tiling inference)',
+    status: isDFUModelReady() ? 'DFU model v8 ready' : 'DFU model loading...',
   });
 });
 
@@ -233,20 +239,78 @@ Respond ONLY with valid JSON:
       });
     }
 
-    // ── GATE 2: ML DFU classification on validated dataset model ─────────
+    // ── GATE 2: ML DFU classification on validated dataset model ─────────────
     if (!isDFUModelReady()) {
       await initDFUClassifier();
     }
 
     const dfuResult = await runDFUPrediction(imageBase64);
-    const { prediction, confidence, probabilityNormal, probabilityAbnormal, hotspotX = 50, hotspotY = 50 } = dfuResult;
+    const {
+      prediction,
+      confidence,
+      probabilityNormal,
+      probabilityAbnormal,
+      hotspotX = 50,
+      hotspotY = 50,
+      patchesAnalyzed = 1,
+      qualityIssue
+    } = dfuResult;
+
+    // Handle image quality issues returned from the classifier
+    if (prediction === 'UNCERTAIN' && qualityIssue && qualityIssue !== 'model_not_loaded') {
+      const qualityMessages: Record<string, { en: string; ta: string }> = {
+        image_too_blurry:          { en: 'Image is too blurry. Please capture a sharper photo.', ta: 'படம் மங்கலாக உள்ளது. தெளிவான படம் எடுக்கவும்.' },
+        image_too_dark:            { en: 'Image is too dark. Please use better lighting.', ta: 'படம் மிகவும் இருண்டுள்ளது. நல்ல வெளிச்சத்தில் எடுக்கவும்.' },
+        image_overexposed:         { en: 'Image is overexposed. Please avoid direct flash.', ta: 'படம் மிகவும் வெளிர்ந்துள்ளது. நேரடி ஃப்ளாஷை தவிர்க்கவும்.' },
+        insufficient_resolution:   { en: 'Image resolution is too low. Please use a higher-quality camera.', ta: 'படத்தின் தெளிவு மிகவும் குறைவாக உள்ளது.' },
+        image_too_small:           { en: 'Image is too small or corrupt.', ta: 'படம் மிகவும் சிறியதாக உள்ளது.' },
+        unreadable_image:          { en: 'Image cannot be read. Please try another format.', ta: 'படத்தை படிக்க முடியவில்லை.' },
+      };
+      const qMsg = qualityMessages[qualityIssue] ?? { en: 'Please capture a clearer foot image.', ta: 'தெளிவான காலின் படம் எடுக்கவும்.' };
+      return res.json({
+        success: false,
+        qualityError: true,
+        messageEn: qMsg.en,
+        messageTa: qMsg.ta,
+        serverDurationMs: Math.round(performance.now() - reqStart),
+      });
+    }
+
     const isAbnormal = prediction === 'ABNORMAL';
+    const isUncertain = prediction === 'UNCERTAIN';
     const serverDurationMs = Math.round(performance.now() - reqStart);
 
     // Heatmap points based on actual model hotspot
     const heatmapPoints = isAbnormal
-      ? [{ x: hotspotX, y: hotspotY, intensity: 0.88, radius: 26 }, { x: Math.min(90, hotspotX + 5), y: Math.min(90, hotspotY + 5), intensity: 0.55, radius: 16 }]
+      ? [
+          { x: hotspotX, y: hotspotY, intensity: 0.88, radius: 26 },
+          { x: Math.min(90, hotspotX + 5), y: Math.min(90, hotspotY + 5), intensity: 0.55, radius: 16 }
+        ]
+      : isUncertain
+      ? [{ x: hotspotX, y: hotspotY, intensity: 0.45, radius: 22 }]
       : [{ x: 50, y: 50, intensity: 0.15, radius: 22 }];
+
+    // Build status summary based on prediction (including UNCERTAIN)
+    const getStatusEn = () => {
+      if (isAbnormal) return 'Possible diabetic foot ulcer detected. Please consult a doctor promptly.';
+      if (isUncertain) return 'Result is inconclusive. Please capture a clearer foot image or seek professional assessment.';
+      return 'No ulceration markers detected. Foot appears healthy.';
+    };
+    const getStatusTa = () => {
+      if (isAbnormal) return 'சாத்தியமான நீரிழிவு பாத புண் கண்டறியப்பட்டது. உடனடியாக மருத்துவரை அணுகவும்.';
+      if (isUncertain) return 'முடிவு உறுதிப்படுத்த இயலவில்லை. தெளிவான படம் எடுக்கவும் அல்லது மருத்துவரை அணுகவும்.';
+      return 'புண் அறிகுறிகள் இல்லை. கால் ஆரோக்கியமாக தெரிகிறது.';
+    };
+    const getRecommendationEn = () => {
+      if (isAbnormal) return 'Please consult a qualified diabetologist or podiatrist at a Government Hospital for clinical staging and wound care.';
+      if (isUncertain) return 'Result is uncertain. Please capture a clearer, well-lit foot image from closer range, or seek professional medical assessment for accurate evaluation.';
+      return 'Maintain daily foot inspection, keep feet moisturized (avoiding toe web spaces), wear diabetic footwear, and control blood sugar.';
+    };
+    const getRecommendationTa = () => {
+      if (isAbnormal) return 'அரசு மருத்துவமனையில் தகுதியான மருத்துவர் அல்லது கால் மருத்துவரை உடனடியாக அணுகவும்.';
+      if (isUncertain) return 'முடிவு நிச்சயமற்றது. தெளிவான படம் எடுக்கவும் அல்லது மருத்துவரை அணுகவும்.';
+      return 'தினமும் கால்களை ஆய்வு செய்யவும், நீரிழிவு காலணிகளை பயன்படுத்தவும், இரத்த சர்க்கரையை கட்டுப்படுத்தவும்.';
+    };
 
     const result: DFUPredictionResult = {
       id: `scan-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -255,31 +319,31 @@ Respond ONLY with valid JSON:
       confidence: +confidence.toFixed(3),
       probabilityNormal: +probabilityNormal.toFixed(3),
       probabilityAbnormal: +probabilityAbnormal.toFixed(3),
-      riskLevel: isAbnormal ? 'HIGH' : 'LOW',
-      statusSummaryEn: isAbnormal
-        ? 'Possible diabetic foot ulcer detected. Please consult a doctor promptly.'
-        : 'No ulceration markers detected. Foot appears healthy.',
-      statusSummaryTa: isAbnormal
-        ? 'சாத்தியமான நீரிழிவு பாத புண் கண்டறியப்பட்டது. உடனடியாக மருத்துவரை அணுகவும்.'
-        : 'புண் அறிகுறிகள் இல்லை. கால் ஆரோக்கியமாக தெரிகிறது.',
+      riskLevel: isAbnormal ? 'HIGH' : isUncertain ? 'UNCERTAIN' : 'LOW',
+      statusSummaryEn: getStatusEn(),
+      statusSummaryTa: getStatusTa(),
       keyFindingsEn: isAbnormal
         ? ['Elevated localized redness and tissue texture irregularity consistent with ulceration.', 'Epidermal breach or lesion cluster detected in plantar region.']
-        : ['Uniform skin tone with physiological redness balance.', 'Intact epidermal texture with no lesion markers. '],
+        : isUncertain
+        ? ['Image analysis returned an inconclusive result.', `${patchesAnalyzed} skin region(s) were analyzed using the research prototype model.`]
+        : ['Uniform skin tone with physiological redness balance.', 'Intact epidermal texture with no lesion markers.'],
       keyFindingsTa: isAbnormal
         ? ['திசு அழற்சி அல்லது புண்ணை சுட்டிக்காட்டும் உயர்ந்த சிவப்பு விகிதம்.', 'புண் உருவாவதை குறிக்கும் ஒழுங்கற்ற தோல் அமைப்பு.']
+        : isUncertain
+        ? ['படப் பகுப்பாய்வு உறுதியற்ற முடிவை வழங்கியுள்ளது.', 'தயவுசெய்து தெளிவான படம் எடுக்கவும்.']
         : ['சீரான தோல் நிறம் மற்றும் இயல்பான அமைப்பு.', 'புண் அறிகுறிகள் இல்லாத ஆரோக்கியமான மேல் தோல்.'],
-      recommendationEn: isAbnormal
-        ? 'Please consult a qualified diabetologist or podiatrist at a Government Hospital for clinical staging and wound care.'
-        : 'Maintain daily foot inspection, keep feet moisturized (avoiding toe web spaces), wear diabetic footwear, and control blood sugar.',
-      recommendationTa: isAbnormal
-        ? 'அரசு மருத்துவமனையில் தகுதியான மருத்துவர் அல்லது கால் மருத்துவரை உடனடியாக அணுகவும்.'
-        : 'தினமும் கால்களை ஆய்வு செய்யவும், நீரிழிவு காலணிகளை பயன்படுத்தவும், இரத்த சர்க்கரையை கட்டுப்படுத்தவும்.',
-      isLocalizationAvailable: true,
+      recommendationEn: getRecommendationEn(),
+      recommendationTa: getRecommendationTa(),
+      isLocalizationAvailable: !isUncertain,
       localizationDescriptionEn: isAbnormal
-        ? `Model activation localized around coordinates (${hotspotX}%, ${hotspotY}%) with elevated lesion markers.`
-        : 'Model activation is uniformly distributed across healthy intact skin without any localized ulcer cluster.',
+        ? `Model activation localized around coordinates (${hotspotX}%, ${hotspotY}%) with elevated lesion markers. ${patchesAnalyzed} patch(es) analyzed.`
+        : isUncertain
+        ? 'Localization is not available for uncertain results.'
+        : `Model activation is uniformly distributed across healthy intact skin. ${patchesAnalyzed} region(s) analyzed.`,
       localizationDescriptionTa: isAbnormal
         ? `(${hotspotX}%, ${hotspotY}%) பகுதியில் உயர்ந்த புண் குறிகாட்டிகளுடன் மாதிரி கவனம் குவிந்துள்ளது.`
+        : isUncertain
+        ? 'உறுதியற்ற முடிவுகளுக்கு இடமறிதல் கிடைக்காது.'
         : 'மாதிரி கவனம் எந்த புண் குவியலும் இல்லாமல் ஆரோக்கியமான தோல் பகுதியில் சீராக பரவியுள்ளது.',
       heatmapPoints,
       qualityReport: {
@@ -565,7 +629,7 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🦶 FootGuard AI server running on http://localhost:${PORT}`);
     console.log(`   Gemini configured: ${hasValidKey ? '✅' : '❌'}`);
-    console.log(`   DFU GBDT Model: 19 Clinical Biomarkers (Balanced, Eroded-Mask) ✅\n`);
+    console.log(`   DFU GBDT Model: 19 Biomarkers | Balanced 240x240 | Youden Threshold (v8) ✅\n`);
   });
 }
 
